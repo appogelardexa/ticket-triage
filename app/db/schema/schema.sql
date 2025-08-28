@@ -1,0 +1,1 @@
+-- Schema SQL here, with enums, tables, triggers, and history tracking
