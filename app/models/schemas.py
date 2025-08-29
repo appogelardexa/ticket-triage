@@ -49,6 +49,62 @@ class TicketCreate(BaseModel):
     message_id: Optional[str] = None
     thread_id: Optional[str] = None
 
+class TicketCreateInput(BaseModel):
+    # Core
+    summary: str
+    status: Optional[TicketStatus] = TicketStatus.new
+    priority: Optional[TicketPriority] = TicketPriority.P3
+    channel: Optional[TicketChannel] = TicketChannel.email
+
+    # Client reference (either id, email, or name)
+    client_id: Optional[int] = None
+    client_name: Optional[str] = None
+    client_email: Optional[str] = None
+
+    # Assignee reference (either id or email)
+    assignee_id: Optional[int] = None
+    assignee_name: Optional[str] = None
+    assignee_email: Optional[str] = None
+
+    # Department reference (either id or name)
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
+
+    # Category reference (either id or name; if name, department must be known)
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
+
+    # Email/message metadata
+    body: Optional[str] = None
+    subject: Optional[str] = None
+    message_id: Optional[str] = None
+    thread_id: Optional[str] = None
+
+class TicketCreatePublic(BaseModel):
+    # Core
+    summary: str
+    status: Optional[TicketStatus] = TicketStatus.new
+    priority: Optional[TicketPriority] = TicketPriority.P3
+    channel: Optional[TicketChannel] = TicketChannel.email
+
+    # Client (no ids here)
+    client_name: Optional[str] = None
+    client_email: Optional[str] = None
+
+    # Assignee (no ids here)
+    assignee_name: Optional[str] = None
+    assignee_email: Optional[str] = None
+
+    # Department/Category by name only
+    department_name: Optional[str] = None
+    category_name: Optional[str] = None
+
+    # Message metadata
+    body: Optional[str] = None
+    subject: Optional[str] = None
+    message_id: Optional[str] = None
+    thread_id: Optional[str] = None
+
 class TicketPatch(BaseModel):
     summary: Optional[str] = None
     status: Optional[TicketStatus] = None
@@ -121,8 +177,6 @@ class TicketsPage(BaseModel):
     limit: int
     offset: int
     next_offset: Optional[int] = None
-
-
 
 class TicketsPageFormatted(BaseModel): 
     data: List[TicketFormattedOut]

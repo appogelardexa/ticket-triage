@@ -2,19 +2,63 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from app.core.config import get_supabase
 from app.models.schemas import (
-    TicketCreate, 
-    TicketPatch, 
-    TicketOut, 
+    TicketCreate,
+    TicketCreateInput,
+    TicketCreatePublic,
+    TicketPatch,
+    TicketOut,
     TicketWithClientFlat,
-    StatusHistoryRow, 
+    StatusHistoryRow,
     PriorityHistoryRow,
     TicketsPage,
     TicketFormattedOut,
-    TicketsPageFormatted
-    
+    TicketsPageFormatted,
+)
+from app.services.tickets_service import (
+    resolve_ticket_create_refs,
+    build_ticket_insertable,
 )
 
 router = APIRouter(tags=["tickets"])
+
+@router.post("/create", response_model=TicketFormattedOut, status_code=201, summary="Create ticket (resolve names to IDs)")
+def create_ticket(payload: TicketCreatePublic):
+    sb = get_supabase()
+
+    data = resolve_ticket_create_refs(sb, payload)
+    insertable = build_ticket_insertable(data)
+
+    res = (
+        sb.table("tickets")
+          .insert(insertable)
+          .execute()
+    )
+
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+
+    # Normalize insert response (Supabase may return list of rows)
+    row = None
+    if isinstance(res.data, list):
+        row = res.data[0] if res.data else None
+    else:
+        row = res.data
+    ticket_id = row.get("ticket_id") if isinstance(row, dict) else None
+    if not ticket_id:
+        raise HTTPException(status_code=502, detail="Failed to retrieve created ticket_id")
+
+    res2 = (
+        sb.table("tickets_formatted")
+          .select("*")
+          .eq("ticket_id", ticket_id)
+          .single()
+          .execute()
+    )
+    if getattr(res2, "error", None):
+        raise HTTPException(status_code=502, detail=str(res2.error))
+    if not getattr(res2, "data", None):
+        raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
+    return res2.data
 
 @router.get("/paginated", response_model=TicketsPageFormatted, summary="List tickets (formatted, paginated)")
 def list_tickets(
@@ -93,21 +137,6 @@ def list_tickets_by_client_name(
         raise HTTPException(status_code=502, detail=str(res.error))
 
     return res.data or []
-
-
-# @router.get("/{id}", response_model=TicketFormattedOut, summary="Get ticket by numeric id")
-# def get_ticket_by_id(id: int):
-#     sb = get_supabase()
-#     res = (
-#         sb.table("tickets_formatted")
-#           .select("*")
-#           .eq("id", id)
-#           .single()
-#           .execute()
-#     )
-#     if not getattr(res, "data", None):
-#         raise HTTPException(status_code=404, detail="Ticket not found")
-#     return res.data
 
 
 @router.get("/{ticket_id}", response_model=TicketFormattedOut, summary="Get ticket by ticket_id")
