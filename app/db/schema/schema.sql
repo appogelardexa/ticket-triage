@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS public.tickets (
   channel                 ticket_channel  NOT NULL DEFAULT 'email',
 
   summary                 text NOT NULL,
-  email_body              text,
+  body                    text,
+  subject                 text, 
   message_id              text,
   thread_id               text,
 

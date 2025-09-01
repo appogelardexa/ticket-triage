@@ -37,7 +37,19 @@ class ClientOut(BaseModel):
     domain: Optional[str] = None
     company_id: Optional[int] = None
 
-class TicketCreate(BaseModel):
+class ClientCreate(BaseModel):
+    name: str
+    email: Optional[str] = None
+    domain: Optional[str] = None
+    company_id: Optional[int] = None
+
+class ClientPatch(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    domain: Optional[str] = None
+    company_id: Optional[int] = None
+
+class TicketCreateInputV1(BaseModel):
     summary: str
     status: TicketStatus = TicketStatus.new
     priority: TicketPriority = TicketPriority.normal
@@ -49,57 +61,66 @@ class TicketCreate(BaseModel):
     message_id: Optional[str] = None
     thread_id: Optional[str] = None
 
-class TicketCreateInput(BaseModel):
-    # Core
+class TicketCreateInputV2(BaseModel):
     summary: str
     status: Optional[TicketStatus] = TicketStatus.new
     priority: Optional[TicketPriority] = TicketPriority.P3
     channel: Optional[TicketChannel] = TicketChannel.email
 
-    # Client reference (either id, email, or name)
     client_id: Optional[int] = None
     client_name: Optional[str] = None
     client_email: Optional[str] = None
 
-    # Assignee reference (either id or email)
     assignee_id: Optional[int] = None
     assignee_name: Optional[str] = None
     assignee_email: Optional[str] = None
 
-    # Department reference (either id or name)
     department_id: Optional[int] = None
     department_name: Optional[str] = None
 
-    # Category reference (either id or name; if name, department must be known)
     category_id: Optional[int] = None
     category_name: Optional[str] = None
 
-    # Email/message metadata
+    body: Optional[str] = None
+    subject: Optional[str] = None
+    message_id: Optional[str] = None
+    thread_id: Optional[str] = None
+
+
+class TicketCreateInputV3(BaseModel):
+    summary: str
+    status: Optional[TicketStatus] = TicketStatus.new
+    priority: Optional[TicketPriority] = TicketPriority.P3
+    channel: Optional[TicketChannel] = TicketChannel.email
+
+    client_id: Optional[int] = None
+    client_name: Optional[str] = None
+    client_email: Optional[str] = None
+
+    assignee_id: Optional[int] = None
+    department_id: Optional[int] = None
+    category_id: Optional[int] = None
+
     body: Optional[str] = None
     subject: Optional[str] = None
     message_id: Optional[str] = None
     thread_id: Optional[str] = None
 
 class TicketCreatePublic(BaseModel):
-    # Core
     summary: str
     status: Optional[TicketStatus] = TicketStatus.new
     priority: Optional[TicketPriority] = TicketPriority.P3
     channel: Optional[TicketChannel] = TicketChannel.email
 
-    # Client (no ids here)
     client_name: Optional[str] = None
     client_email: Optional[str] = None
 
-    # Assignee (no ids here)
     assignee_name: Optional[str] = None
     assignee_email: Optional[str] = None
 
-    # Department/Category by name only
     department_name: Optional[str] = None
     category_name: Optional[str] = None
 
-    # Message metadata
     body: Optional[str] = None
     subject: Optional[str] = None
     message_id: Optional[str] = None
@@ -113,7 +134,7 @@ class TicketPatch(BaseModel):
     client_id: Optional[int] = None
     department_id: Optional[int] = None
     category_id: Optional[int] = None
-    email_body: Optional[str] = None
+    body: Optional[str] = None
 
 class TicketOut(BaseModel):
     id: int
@@ -168,6 +189,8 @@ class TicketFormattedOut(BaseModel):
     assignee_email: Optional[str] = None
     department_name: Optional[str] = None
     category_name: Optional[str] = None
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -184,3 +207,48 @@ class TicketsPageFormatted(BaseModel):
     limit: int
     offset: int
     next_offset: Optional[int]
+
+class TicketsListWithCount(BaseModel):
+    data: List[TicketFormattedOut]
+    count: Optional[int] = None
+    limit: int
+
+# Departments
+class DepartmentOut(BaseModel):
+    id: int
+    name: str
+    google_channel: Optional[str] = None
+    default_assignee_id: Optional[int] = None
+
+class DepartmentCreate(BaseModel):
+    name: str
+    google_channel: Optional[str] = None
+    default_assignee_id: Optional[int] = None
+    
+class DepartmentPatch(BaseModel):
+    name: Optional[str] = None
+    google_channel: Optional[str] = None
+    default_assignee_id: Optional[int] = None
+
+# Categories
+class CategoryOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    department_id: int
+    default_slack_channel: Optional[str] = None
+    auto_assign_to_id: Optional[int] = None
+
+class CategoryCreate(BaseModel):
+    name: str
+    description: str
+    department_id: int
+    default_slack_channel: Optional[str] = None
+    auto_assign_to_id: Optional[int] = None
+
+class CategoryPatch(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    department_id: Optional[int] = None
+    default_slack_channel: Optional[str] = None
+    auto_assign_to_id: Optional[int] = None

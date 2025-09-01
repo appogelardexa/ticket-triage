@@ -1,6 +1,6 @@
 from typing import Optional
 from fastapi import HTTPException
-from app.models.schemas import TicketCreateInput
+from app.models.schemas import TicketCreateInputV3
 
 
 def fail_400(msg: str):
@@ -22,7 +22,7 @@ def fetch_single_id(sb, table: str, where: dict):
     return rows[0]["id"]
 
 
-def resolve_ticket_create_refs(sb, inp: TicketCreateInput) -> dict:
+def resolve_ticket_create_refs(sb, inp: TicketCreateInputV3,) -> dict:
     data = inp.model_dump(exclude_none=True)
 
     # Priority/status/channel are enums in DB (not FKs); leave as-is if present.
@@ -37,7 +37,11 @@ def resolve_ticket_create_refs(sb, inp: TicketCreateInput) -> dict:
             raise HTTPException(status_code=502, detail=str(res_c.error))
         if not getattr(res_c, "data", None):
             raise HTTPException(status_code=502, detail="Failed to create client")
-        return res_c.data["id"]
+        # Supabase v2 insert returns a list of rows; normalize to a dict
+        row = res_c.data[0] if isinstance(res_c.data, list) else res_c.data
+        if not isinstance(row, dict) or "id" not in row:
+            raise HTTPException(status_code=502, detail="Create client: missing id in response")
+        return row["id"]
 
     # Client resolution order
     if "client_id" not in data:
@@ -89,9 +93,6 @@ def resolve_ticket_create_refs(sb, inp: TicketCreateInput) -> dict:
     for k in ["client_email", "client_name", "assignee_email", "assignee_name", "department_name", "category_name"]:
         data.pop(k, None)
 
-    # Required fields
-    # if not data.get("summary"):
-    #     fail_400("summary is required")
 
     return data
 
@@ -103,8 +104,5 @@ def build_ticket_insertable(data: dict) -> dict:
         "body", "message_id", "thread_id",
     }
     insertable = {k: v for k, v in data.items() if k in allowed}
-    # Map body -> email_body if provided
-    # if "body" in data and "email_body" not in insertable:
-    #     insertable["email_body"] = data["body"]
     
     return insertable

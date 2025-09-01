@@ -36,4 +36,3 @@ def priority_history(ticket_id: str, sort: bool = Query(True, description="True=
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     return res.data or []
-
