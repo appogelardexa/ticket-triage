@@ -106,3 +106,53 @@ def build_ticket_insertable(data: dict) -> dict:
     insertable = {k: v for k, v in data.items() if k in allowed}
     
     return insertable
+
+
+from datetime import datetime, timezone, timedelta
+
+def _parse_ymd_utc(value: str) -> datetime:
+    """
+    Parse a date string in flexible YYYY-M-D format (e.g., "2025-9-1" or "2025-09-01")
+    and return a timezone-aware UTC datetime at 00:00:00.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Date must be a string like '2025-9-1'.")
+    parts = value.strip().split("-")
+    if len(parts) != 3:
+        raise ValueError("Invalid date format. Use 'YYYY-M-D', e.g. '2025-9-1'.")
+    try:
+        y, m, d = (int(parts[0]), int(parts[1]), int(parts[2]))
+        return datetime(y, m, d, tzinfo=timezone.utc)
+    except Exception as exc:
+        raise ValueError(f"Invalid date components for '{value}': {exc}") from exc
+
+
+def build_utc_range(
+    on: Optional[str] = None,
+    start_at: Optional[str] = None,
+    end_at: Optional[str] = None,   
+    ) -> tuple[str, str]:
+    """
+    Build an ISO8601 UTC range [start, end) with 'Z'.
+    Parameters accept dates like '2025-9-1' (YYYY-M-D):
+    - on: single specific date; returns that day's 00:00Z to next day 00:00Z
+    - start_at, end_at: inclusive calendar dates; returns
+      [start_at 00:00Z, (end_at + 1 day) 00:00Z)
+    Exactly one of the following must be provided:
+      - 'on'
+      - both 'start_at' and 'end_at'
+    """
+    if on:
+        start_dt = _parse_ymd_utc(on)
+        end_dt = start_dt + timedelta(days=1)
+    else:
+        if not (start_at and end_at):
+            raise ValueError("Provide either 'on' or both 'start_at' and 'end_at'.")
+        
+        start_dt = _parse_ymd_utc(start_at)
+        end_dt = _parse_ymd_utc(end_at) + timedelta(days=1)
+
+    start_iso = start_dt.isoformat().replace("+00:00", "Z")
+    end_iso = end_dt.isoformat().replace("+00:00", "Z")
+
+    return start_iso, end_iso

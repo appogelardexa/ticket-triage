@@ -13,16 +13,38 @@ from app.models.schemas import (
     TicketsPageFormatted,
     TicketCreateInputV3,
     TicketsListWithCount,
+    TicketStatus,
+    TicketPriority,
+    TicketChannel,
 )
 from app.services.tickets_service import (
     resolve_ticket_create_refs,
     build_ticket_insertable,
+    build_utc_range
 )
 
 router = APIRouter(tags=["tickets"])
 
 @router.post("/create", response_model=TicketFormattedOut, status_code=201, summary="Create ticket (resolve names to IDs)")
 def create_ticket(payload: TicketCreateInputV3):
+    """
+    Create a new ticket in the `tickets` table and return the fully formatted record.
+
+    - Input: a `TicketCreateInputV3` payload.
+    * References to related entities (e.g., status, priority, channel) are resolved
+        to their internal IDs before insertion.
+    - The resolved payload is inserted into the `tickets` table.
+    - On success, the created row’s `ticket_id` is retrieved and used to query the
+    `tickets_formatted` view, ensuring the response matches the formatted schema.
+
+    Response:
+    - Returns the created ticket record from `tickets_formatted` with normalized fields.
+
+    Errors:
+    - 502 if the insert fails, no `ticket_id` is returned, or the created ticket
+    cannot be retrieved from the formatted view.
+    """
+
     sb = get_supabase()
 
     data = resolve_ticket_create_refs(sb, payload)
@@ -60,12 +82,31 @@ def create_ticket(payload: TicketCreateInputV3):
         raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
     return res2.data
 
-@router.get("/paginated", response_model=TicketsPageFormatted, summary="List tickets (formatted, paginated)")
+@router.get("/paginated", response_model=TicketsPageFormatted, summary="Fetch a paginated list of tickets")
 def list_tickets(
     limit: int = Query(10, ge=1, le=100, description="Number of tickets to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     sort: bool = Query(False, description="True=descending (newest first), False=ascending"),
 ):
+    """
+    Retrieve a paginated list of tickets from the `tickets_formatted` table.
+
+    - Results are ordered by `created_at` (ascending by default; descending if `sort=True`).
+    - Pagination is controlled by:
+    * `limit` — maximum number of rows per page (default 10, max 100).
+    * `offset` — starting row for the current page.
+
+    Response:
+    - `count` — total number of tickets available.
+    - `limit` — page size applied.
+    - `offset` — current page offset.
+    - `next_offset` — offset value for the next page, or `null` if no more results.
+    - `data` — the ticket records returned.
+
+    Errors:
+    - 502 if the database query fails.
+    """
+
     sb = get_supabase()
     res = (
         sb.table("tickets_formatted")
@@ -83,110 +124,142 @@ def list_tickets(
     next_offset = (offset + limit) if has_more else None
 
     return {
-        "data": data,   
         "count": count,
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,
+        "data": data,   
     }
 
-# @router.get("/by-date", response_model=TicketsListWithCount, summary="Filter tickets by created_at date")
-# def filter_tickets_by_date(
-#     on: Optional[date] = Query(None, description="Specific date (YYYY-MM-DD)"),
-#     start_date: Optional[date] = Query(None, description="Start date inclusive (YYYY-MM-DD)"),
-#     end_date: Optional[date] = Query(None, description="End date inclusive (YYYY-MM-DD)"),
-#     sort: bool = Query(True, description="True=newest first; False=oldest first"),
-#     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
-# ):
-#     """
-#     Basic date filtering using UTC [start, end) range.
-#     - If `on` is provided, filters that single calendar day in UTC.
-#     - Otherwise uses `start_date` and/or `end_date` (inclusive end date).
-#     """
-#     sb = get_supabase()
-
-#     start_dt_utc: Optional[datetime] = None
-#     end_dt_utc: Optional[datetime] = None
-
-#     if on is not None:
-#         start_dt_utc = datetime(on.year, on.month, on.day, tzinfo=timezone.utc)
-#         end_dt_utc = start_dt_utc + timedelta(days=1)
-#     else:
-#         if start_date is not None:
-#             start_dt_utc = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
-#         if end_date is not None:
-#             end_dt_utc = datetime(end_date.year, end_date.month, end_date.day, tzinfo=timezone.utc) + timedelta(days=1)
-
-#     if start_dt_utc and end_dt_utc and start_dt_utc >= end_dt_utc:
-#         raise HTTPException(status_code=400, detail="start_date must be before end_date")
-#     if start_dt_utc is None and end_dt_utc is None:
-#         raise HTTPException(status_code=400, detail="Provide on, or start_date/end_date")
-
-#     def as_rfc3339(dt: datetime) -> str:
-#         return dt.isoformat().replace("+00:00", "Z")
-
-#     q = sb.table("tickets_detailed").select("*", count="exact")
-#     if start_dt_utc is not None:
-#         q = q.gte("created_at", as_rfc3339(start_dt_utc))
-#     if end_dt_utc is not None:
-#         q = q.lt("created_at", as_rfc3339(end_dt_utc))
-
-#     res = q.order("created_at", desc=sort).range(0, max(0, limit - 1)).execute()
-#     if getattr(res, "error", None):
-#         raise HTTPException(status_code=502, detail=str(res.error))
-
-#     return {
-#         "data": res.data or [],
-#         "count": getattr(res, "count", None),
-#         "limit": limit,
-#     }
-
-@router.get("/by-email", response_model=List[TicketFormattedOut], summary="List tickets by email")
-def list_tickets_by_email(
-    email: str = Query(..., min_length=3, description="Email to filter by"),
-    scope: str = Query("client", description="Where to match: client | assignee | any"),
-    sort: bool = Query(True, description="True=descending (newest first), False=ascending"),
+@router.get("/by-date", response_model=TicketsListWithCount, summary="Filter tickets by created_at date")
+def filter_tickets_by_date(
+    on: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD)"),
+    start_date: Optional[str] = Query(None, description="Start date inclusive (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date inclusive (YYYY-MM-DD)"),
+    sort: bool = Query(True, description="True=newest first; False=oldest first"),
+    limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
 ):
+    """
+    Retrieve tickets filtered by their `created_at` timestamp.
+
+    - Provide at least one of:
+    * `on` — a specific calendar date (filters tickets created on that day, UTC).
+    * `start_date` — the inclusive start date of the range.
+    * `end_date` — the inclusive end date of the range.
+    - If only `on` is given, results cover that single day.
+    - If `start_date` and/or `end_date` are provided, results cover the inclusive date range.
+    - Results are ordered by `created_at` (newest first by default; oldest first if `sort=False`).
+    - Maximum rows are capped by `limit` (default 50, maximum 100).
+
+    Response:
+    - `count` — total matching records.
+    - `limit` — applied row limit.
+    - `data` — list of tickets.
+
+    Errors:
+    - 400 if no date filters are provided or if `start_date >= end_date`.
+    - 502 if the database query fails.
+    """
+
     sb = get_supabase()
-    query = sb.table("tickets_formatted").select("*")
 
-    s = (scope or "client").lower()
-    if s == "client":
-        query = query.eq("client_email", email)
-    elif s == "assignee":
-        query = query.eq("assignee_email", email)
+    if on is not None:
+        start_at, end_at = build_utc_range(on=on)
     else:
-        # Match either client or assignee email
-        query = query.or_(f"client_email.eq.{email},assignee_email.eq.{email}")
+        start_at, end_at = build_utc_range(start_at=start_date, end_at=end_date)
+        if start_at >= end_at:
+            raise HTTPException(status_code=400, detail="start_date must be before end_date")
 
-    res = query.order("created_at", desc=sort).execute()
+        
+    q = sb.table("tickets_detailed").select("*", count="exact")
+    if sort is not None:
+        q = q.order("created_at", desc=sort)
+    if limit is not None:
+        q = q.limit(limit)
 
+    q = q.gte("created_at", start_at).lt("created_at", end_at)
+    res = q.execute()
+    
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
 
-    return res.data or []
+    return {
+        "count": getattr(res, "count", None),
+        "limit": limit,
+        "data": res.data or [],
+    }
 
 
-@router.get("/by-client-name", response_model=List[TicketFormattedOut], summary="List tickets by client name (no pagination)")
-def list_tickets_by_client_name(
-    name: str = Query(..., min_length=2, description="Client name to filter by"),
-    exact: bool = Query(False, description="True=exact match, False=contains match"),
-    sort: bool = Query(True, description="True=descending (newest first), False=ascending"),
+@router.get("/by-attributes", response_model=TicketsListWithCount, summary="Filter tickets by ter tickets by status, priority, or channel")
+def filter_tickets_by_attributes(
+    status: Optional[TicketStatus] = Query(None, description="Ticket status"),
+    priority: Optional[TicketPriority] = Query(None, description="Ticket priority"),
+    channel: Optional[TicketChannel] = Query(None, description="Ticket channel"),
+    
+    on: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD)"),
+    start_date: Optional[str] = Query(None, description="Start date inclusive (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date inclusive (YYYY-MM-DD)"),
+    
+    sort: bool = Query(True, description="True=newest first; False=oldest first"),
+    limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
 ):
+    """
+    Retrieve tickets filtered by one or more attributes: `status`, `priority`, or `channel`.
+    Optional date filters (`on`, `start_date`, `end_date`) may also be applied.
+
+    - At least one of `status`, `priority`, or `channel` must be provided; otherwise a 400 error is returned.
+    - If `on` is given, results cover that single UTC calendar day.
+    - If `start_date` and/or `end_date` are provided, results cover the inclusive date range.
+    - Results are ordered by `created_at` (newest first by default; oldest first if `sort=False`).
+    - Maximum rows are capped by `limit` (default 50, maximum 100).
+
+    Response:
+    - `count` — total number of records matching the filters.
+    - `limit` — the applied row limit.
+    - `data` — the list of ticket records.
+
+    Errors:
+    - 400 if no attribute filters are provided, or if `start_date >= end_date`.
+    - 502 if the database query fails.
+    """
+
+
+
     sb = get_supabase()
-    query = sb.table("tickets_formatted").select("*")
 
-    if exact:
-        query = query.eq("client_name", name)
+    # Require at least one filter to avoid unbounded result
+    if not any([status, priority, channel]):
+        raise HTTPException(status_code=400, detail="Provide at least one of status, priority or channel")
+
+    q = sb.table("tickets_detailed").select("*", count="exact")
+
+    # Apply filters; use enum .value if provided
+    if status is not None:
+        q = q.eq("status", getattr(status, "value", status))
+    if priority is not None:
+        q = q.eq("priority", getattr(priority, "value", priority))
+    if channel is not None:
+        q = q.eq("channel", getattr(channel, "value", channel))
+
+    if on is not None:
+        start_at, end_at = build_utc_range(on=on)
+        q = q.gte("created_at", start_at).lt("created_at", end_at)
     else:
-        query = query.ilike("client_name", f"%{name}%")
+        if start_date is not None or end_date is not None:
+            start_at, end_at = build_utc_range(start_at=start_date, end_at=end_date)
+            if start_at >= end_at:
+                raise HTTPException(status_code=400, detail="start_date must be before end_date")
+            q = q.gte("created_at", start_at).lt("created_at", end_at)
 
-    res = query.order("created_at", desc=sort).execute()
-
+    res = q.order("created_at", desc=sort).range(0, max(0, limit - 1)).execute()
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
 
-    return res.data or []
+    return {
+        "count": getattr(res, "count", None),
+        "limit": limit,
+        "data": res.data or [],
+    }
 
 
 @router.get("/{ticket_id}", response_model=TicketFormattedOut, summary="Get ticket by ticket_id")
@@ -264,9 +337,9 @@ def filter_tickets(
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     return {
-        "data": res.data or [],
         "count": getattr(res, "count", None),
         "limit": limit,
+        "data": res.data or [],
     }
 
 
@@ -326,6 +399,3 @@ def delete_ticket(ticket_id: str):
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     return Response(status_code=204)
-
-
-

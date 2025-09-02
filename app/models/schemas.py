@@ -202,16 +202,16 @@ class TicketsPage(BaseModel):
     next_offset: Optional[int] = None
 
 class TicketsPageFormatted(BaseModel): 
-    data: List[TicketFormattedOut]
     count: Optional[int] 
     limit: int
     offset: int
     next_offset: Optional[int]
+    data: List[TicketFormattedOut]
 
 class TicketsListWithCount(BaseModel):
-    data: List[TicketFormattedOut]
     count: Optional[int] = None
     limit: int
+    data: List[TicketFormattedOut]
 
 # Departments
 class DepartmentOut(BaseModel):
