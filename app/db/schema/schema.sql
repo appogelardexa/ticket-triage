@@ -331,3 +331,20 @@ SELECT
 FROM public.tickets t
 LEFT JOIN public.ticket_priority_history h ON h.ticket_id = t.id
 GROUP BY t.id, t.ticket_id;
+
+-- -------------------------------------------------
+-- Ticket Attachments
+-- -------------------------------------------------
+-- Stores metadata for files kept in Supabase Storage.
+-- We keep only the object path (relative to bucket).
+-- The physical file is managed in storage; rows cascade on ticket delete.
+CREATE TABLE IF NOT EXISTS public.ticket_attachments (
+  id           bigserial PRIMARY KEY,
+  ticket_id    bigint REFERENCES public.tickets(id) ON DELETE CASCADE,
+  file_path    text NOT NULL,              -- e.g., "tickets/TCK-000123/uuid-filename.ext"
+  filename     text,                       -- original or display name
+  mime_type    text,
+  size_bytes   bigint,
+  created_at   timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket_id ON public.ticket_attachments(ticket_id);

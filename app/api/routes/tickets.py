@@ -1,6 +1,9 @@
 from typing import List, Optional
+from uuid import uuid4
+import os
+import mimetypes
 from datetime import date, datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, File, Form
 from app.core.config import get_supabase
 from app.models.schemas import (
     TicketPatch,
@@ -16,12 +19,23 @@ from app.models.schemas import (
     TicketStatus,
     TicketPriority,
     TicketChannel,
+    TicketAttachmentOut,
+    TicketCreatedWithAttachmentsOut,
+    TicketFormattedWithAttachmentsOut,
+    TicketsPageFormattedWithAttachments,
 )
 from app.services.tickets_service import (
     resolve_ticket_create_refs,
     build_ticket_insertable,
-    build_utc_range
+    build_utc_range,
+    upload_attachments_for_ticket
 )
+
+
+
+# Storage config
+ATTACHMENTS_BUCKET = os.getenv("SUPABASE_TICKET_ATTACHMENTS_BUCKET")
+
 
 router = APIRouter(tags=["tickets"])
 
@@ -82,7 +96,231 @@ def create_ticket(payload: TicketCreateInputV3):
         raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
     return res2.data
 
-@router.get("/paginated", response_model=TicketsPageFormatted, summary="Fetch a paginated list of tickets")
+
+@router.post(
+    "/create-with-attachments",
+    response_model=TicketCreatedWithAttachmentsOut,
+    status_code=201,
+    summary="Create ticket with optional attachments",
+)
+def create_ticket_with_attachments(
+    # TicketCreateInputV3 fields via Form to support multipart
+    summary: str = Form(...),
+    status: Optional[TicketStatus] = Form(None),
+    priority: Optional[TicketPriority] = Form(None),
+    channel: Optional[TicketChannel] = Form(None),
+    client_id: Optional[int] = Form(None),
+    client_name: Optional[str] = Form(None),
+    client_email: Optional[str] = Form(None),
+    assignee_id: Optional[int] = Form(None),
+    department_id: Optional[int] = Form(None),
+    category_id: Optional[int] = Form(None),
+    body: Optional[str] = Form(None),
+    subject: Optional[str] = Form(None),
+    message_id: Optional[str] = Form(None),
+    thread_id: Optional[str] = Form(None),
+    attachments: Optional[List[UploadFile]] = File(None),
+):
+    sb = get_supabase()
+
+    payload = TicketCreateInputV3(
+        summary=summary,
+        status=status,
+        priority=priority,
+        channel=channel,
+        client_id=client_id,
+        client_name=client_name,
+        client_email=client_email,
+        assignee_id=assignee_id,
+        department_id=department_id,
+        category_id=category_id,
+        body=body,
+        subject=subject,
+        message_id=message_id,
+        thread_id=thread_id,
+    )
+
+    data = resolve_ticket_create_refs(sb, payload)
+    insertable = build_ticket_insertable(data)
+
+    res = sb.table("tickets").insert(insertable).execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+
+    row = res.data[0] if isinstance(res.data, list) and res.data else res.data
+    ticket_id = row.get("ticket_id") if isinstance(row, dict) else None
+    if not ticket_id:
+        raise HTTPException(status_code=502, detail="Failed to retrieve created ticket_id")
+
+    res2 = (
+        sb.table("tickets_formatted")
+          .select("*")
+          .eq("ticket_id", ticket_id)
+          .single()
+          .execute()
+    )
+    if getattr(res2, "error", None):
+        raise HTTPException(status_code=502, detail=str(res2.error))
+    if not getattr(res2, "data", None):
+        raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
+
+    ticket_row = res2.data
+    uploaded = upload_attachments_for_ticket(sb, ticket_row, attachments)
+    return {"ticket": ticket_row, "attachments": uploaded}
+
+
+@router.get(
+    "/{ticket_id}/attachments",
+    response_model=List[TicketAttachmentOut],
+    summary="List attachments for a ticket",
+)
+def list_ticket_attachments(ticket_id: str):
+    sb = get_supabase()
+    # Get numeric id
+    t = sb.table("tickets").select("id").eq("ticket_id", ticket_id).single().execute()
+    if getattr(t, "error", None) or not getattr(t, "data", None):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket_pk = t.data.get("id") if isinstance(t.data, dict) else None
+    res = (
+        sb.table("ticket_attachments")
+          .select("*")
+          .eq("ticket_id", ticket_pk)
+          .order("created_at")
+          .execute()
+    )
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+    return res.data or []
+
+
+@router.post(
+    "/{ticket_id}/attachments",
+    response_model=List[TicketAttachmentOut],
+    status_code=201,
+    summary="Upload one or more attachments to a ticket",
+)
+def add_ticket_attachments(ticket_id: str, files: Optional[List[UploadFile]] = File(None)):
+    sb = get_supabase()
+    t = sb.table("tickets_formatted").select("*").eq("ticket_id", ticket_id).single().execute()
+    if getattr(t, "error", None) or not getattr(t, "data", None):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket_row = t.data
+    rows = upload_attachments_for_ticket(sb, ticket_row, files)
+    return rows
+
+
+@router.delete(
+    "/{ticket_id}/attachments/{attachment_id}",
+    status_code=204,
+    summary="Delete an attachment from a ticket",
+)
+def delete_ticket_attachment(ticket_id: str, attachment_id: int):
+    sb = get_supabase()
+    # Verify ticket and attachment match and fetch the object path
+    t = sb.table("tickets").select("id").eq("ticket_id", ticket_id).single().execute()
+    if getattr(t, "error", None) or not getattr(t, "data", None):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket_pk = t.data.get("id") if isinstance(t.data, dict) else None
+
+    a = (
+        sb.table("ticket_attachments")
+          .select("id,file_path,ticket_id")
+          .eq("id", attachment_id)
+          .eq("ticket_id", ticket_pk)
+          .single()
+          .execute()
+    )
+    if getattr(a, "error", None) or not getattr(a, "data", None):
+        raise HTTPException(status_code=404, detail="Attachment not found for ticket")
+    object_path = a.data.get("file_path") if isinstance(a.data, dict) else None
+
+    # Try to remove from storage first (ignore errors)
+    try:
+        sb.storage.from_(ATTACHMENTS_BUCKET).remove([object_path])
+    except Exception:
+        pass
+
+    # Remove DB row
+    d = sb.table("ticket_attachments").delete().eq("id", attachment_id).execute()
+    if getattr(d, "error", None):
+        raise HTTPException(status_code=502, detail=str(d.error))
+    return Response(status_code=204)
+
+
+@router.put(
+    "/{ticket_id}/attachments/{attachment_id}",
+    response_model=TicketAttachmentOut,
+    summary="Replace file content for an attachment",
+)
+def replace_ticket_attachment(ticket_id: str, attachment_id: int, file: UploadFile = File(...)):
+    sb = get_supabase()
+    # Verify ticket and fetch attachment row
+    t = sb.table("tickets").select("id,ticket_id").eq("ticket_id", ticket_id).single().execute()
+    if getattr(t, "error", None) or not getattr(t, "data", None):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket_pk = t.data.get("id") if isinstance(t.data, dict) else None
+
+    a = (
+        sb.table("ticket_attachments")
+          .select("*")
+          .eq("id", attachment_id)
+          .eq("ticket_id", ticket_pk)
+          .single()
+          .execute()
+    )
+    if getattr(a, "error", None) or not getattr(a, "data", None):
+        raise HTTPException(status_code=404, detail="Attachment not found for ticket")
+    att = a.data
+    object_path = att.get("file_path")
+
+    # Upload new content to the same path (upsert)
+    try:
+        try:
+            file.file.seek(0)
+        except Exception:
+            pass
+        content = file.file.read()
+        up = sb.storage.from_(ATTACHMENTS_BUCKET).upload(
+            path=object_path,
+            file=content,
+            file_options={
+                "content-type": file.content_type or "application/octet-stream",
+                "x-upsert": "true",
+            },
+        )
+        up_err = None
+        if isinstance(up, dict):
+            up_err = up.get("error")
+        else:
+            up_err = getattr(up, "error", None)
+        if up_err:
+            raise HTTPException(status_code=502, detail=f"Storage upload failed: {up_err}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to upload replacement file: {exc}")
+
+    # Update metadata
+    upd = (
+        sb.table("ticket_attachments")
+          .update({
+              "filename": file.filename or att.get("filename"),
+              "mime_type": getattr(file, "content_type", None),
+              "size_bytes": len(content) if content is not None else None,
+          })
+          .eq("id", attachment_id)
+          .execute()
+    )
+    if getattr(upd, "error", None):
+        raise HTTPException(status_code=502, detail=str(upd.error))
+
+    # Return latest row
+    res = sb.table("ticket_attachments").select("*").eq("id", attachment_id).single().execute()
+    if getattr(res, "error", None) or not getattr(res, "data", None):
+        raise HTTPException(status_code=502, detail="Failed to fetch updated attachment")
+    return res.data
+
+@router.get("/paginated", response_model=TicketsPageFormattedWithAttachments, summary="Fetch a paginated list of tickets (with attachments)")
 def list_tickets(
     limit: int = Query(10, ge=1, le=100, description="Number of tickets to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
@@ -123,12 +361,39 @@ def list_tickets(
     has_more = len(data) == limit and (count is None or (offset + limit) < count)
     next_offset = (offset + limit) if has_more else None
 
+    # Bulk-fetch attachments for these tickets and attach inline
+    ids = [row.get("id") for row in data if isinstance(row, dict) and row.get("id") is not None]
+    attachments_map = {}
+    if ids:
+        ares = (
+            sb.table("ticket_attachments")
+              .select("*")
+              .in_("ticket_id", ids)
+              .order("created_at")
+              .execute()
+        )
+        if getattr(ares, "error", None):
+            raise HTTPException(status_code=502, detail=str(ares.error))
+        for att in ares.data or []:
+            tid = att.get("ticket_id")
+            if tid is None:
+                continue
+            attachments_map.setdefault(tid, []).append(att)
+
+    enriched: List[dict] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("id")
+        row = {**row, "attachments": attachments_map.get(tid, [])}
+        enriched.append(row)
+
     return {
         "count": count,
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,
-        "data": data,   
+        "data": enriched,
     }
 
 @router.get("/by-date", response_model=TicketsListWithCount, summary="Filter tickets by created_at date")

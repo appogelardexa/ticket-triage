@@ -1,6 +1,16 @@
-from typing import Optional
-from fastapi import HTTPException
+from uuid import uuid4
+import os
+import mimetypes
+
+from typing import Optional, List
+from fastapi import HTTPException, UploadFile
 from app.models.schemas import TicketCreateInputV3
+
+
+# Storage config
+ATTACHMENTS_BUCKET = os.getenv("SUPABASE_TICKET_ATTACHMENTS_BUCKET")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+
 
 
 def fail_400(msg: str):
@@ -156,3 +166,81 @@ def build_utc_range(
     end_iso = end_dt.isoformat().replace("+00:00", "Z")
 
     return start_iso, end_iso
+
+def upload_attachments_for_ticket(
+    sb,
+    ticket_row: dict,
+    files: Optional[List[UploadFile]],
+) -> List[dict]:
+    """
+    Uploads provided files to Supabase Storage under a folder for this ticket,
+    records metadata in ticket_attachments, and returns the inserted rows.
+    """
+    if not files:
+        return []
+
+    ticket_pk = ticket_row.get("id")
+    ticket_public_id = ticket_row.get("ticket_id")
+    if not ticket_pk or not ticket_public_id:
+        raise HTTPException(status_code=502, detail="Missing ticket identifiers for attachment upload")
+
+    inserted: List[dict] = []
+    bucket = ATTACHMENTS_BUCKET
+
+    for f in files:
+        try:
+            orig_name = f.filename or "attachment"
+            # ensure a reasonable extension
+            _, ext = os.path.splitext(orig_name)
+            if not ext and getattr(f, "content_type", None):
+                guess = mimetypes.guess_extension(f.content_type)
+                ext = guess or ""
+
+            unique = uuid4().hex
+            safe_name = orig_name.replace(" ", "_")
+            object_name = f"{unique}-{safe_name}"
+            object_path = f"tickets/{ticket_public_id}/{object_name}"
+
+            try:
+                f.file.seek(0)
+            except Exception:
+                pass
+            content = f.file.read()
+
+            up = sb.storage.from_(bucket).upload(
+                path=object_path,
+                file=content,
+                file_options={
+                    "content-type": f.content_type or "application/octet-stream",
+                    "x-upsert": "true",
+                },
+            )
+            up_err = None
+            if isinstance(up, dict):
+                up_err = up.get("error")
+            else:
+                up_err = getattr(up, "error", None)
+            if up_err:
+                raise HTTPException(status_code=502, detail=f"Storage upload failed: {up_err}")
+
+            ins = sb.table("ticket_attachments").insert({
+                "ticket_id": ticket_pk,
+                "file_path": object_path,  # store relative path
+                "filename": orig_name,
+                "mime_type": getattr(f, "content_type", None),
+                "size_bytes": len(content) if content is not None else None,
+                "file_url": f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{object_path}",
+            }).execute()
+            if getattr(ins, "error", None):
+                raise HTTPException(status_code=502, detail=str(ins.error))
+
+            row = ins.data[0] if isinstance(ins.data, list) and ins.data else ins.data
+            if row:
+                inserted.append(row)
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to process attachment '{getattr(f,'filename',None)}': {exc}")
+
+    return inserted

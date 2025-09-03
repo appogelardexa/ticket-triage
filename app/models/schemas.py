@@ -256,3 +256,34 @@ class CategoryPatch(BaseModel):
     department_id: Optional[int] = None
     default_slack_channel: Optional[str] = None
     auto_assign_to_id: Optional[int] = None
+
+# ---------------------------------
+# Ticket Attachments (metadata only)
+# ---------------------------------
+class TicketAttachmentOut(BaseModel):
+    id: int
+    ticket_id: int
+    file_path: str
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    file_url: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class TicketCreatedWithAttachmentsOut(BaseModel):
+    ticket: TicketFormattedOut
+    attachments: List[TicketAttachmentOut] = []
+
+
+# Variants that include attachments inline with tickets
+class TicketFormattedWithAttachmentsOut(TicketFormattedOut):
+    attachments: List[TicketAttachmentOut] = []
+
+
+class TicketsPageFormattedWithAttachments(BaseModel):
+    count: Optional[int]
+    limit: int
+    offset: int
+    next_offset: Optional[int]
+    data: List[TicketFormattedWithAttachmentsOut]
