@@ -502,21 +502,21 @@ def filter_tickets_by_attributes(
     }
 
 
-@router.get("/{ticket_id}", response_model=TicketFormattedOut, summary="Get ticket by ticket_id")
+@router.get("/{ticket_id}", response_model=TicketFormattedWithAttachmentsOut, summary="Get ticket by ticket_id (with attachments)")
 def get_ticket_by_ticket_id(ticket_id: str):
     sb = get_supabase()
-
     res = (
         sb.table("tickets_formatted")
           .select("*")
           .eq("ticket_id", ticket_id)
+          .single()
           .execute()
     )
-    rows = res.data or []
-    if not rows:
+    if getattr(res, "error", None) or not getattr(res, "data", None):
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    return rows[0]
+    enriched = enrich_tickets_with_attachments(sb, [res.data])
+    return enriched[0] if enriched else res.data
 
 
 @router.get("/", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by IDs (with attachments)")
@@ -611,7 +611,7 @@ def update_ticket(ticket_id: str, patch: TicketPatch):
         sb.table("tickets_formatted")
           .select("*")
           .eq("ticket_id", ticket_id)
-        #   .single()
+          .single()
           .execute()
     )
     if getattr(res2, "error", None):
