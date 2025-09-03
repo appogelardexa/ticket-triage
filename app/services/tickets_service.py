@@ -2,7 +2,7 @@ from uuid import uuid4
 import os
 import mimetypes
 
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict
 from fastapi import HTTPException, UploadFile
 from app.models.schemas import TicketCreateInputV3
 
@@ -230,6 +230,7 @@ def upload_attachments_for_ticket(
                 "mime_type": getattr(f, "content_type", None),
                 "size_bytes": len(content) if content is not None else None,
                 "file_url": f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{object_path}",
+
             }).execute()
             if getattr(ins, "error", None):
                 raise HTTPException(status_code=502, detail=str(ins.error))
@@ -244,3 +245,75 @@ def upload_attachments_for_ticket(
             raise HTTPException(status_code=502, detail=f"Failed to process attachment '{getattr(f,'filename',None)}': {exc}")
 
     return inserted
+
+
+def get_ticket_pk_and_public_id(sb, ident: str) -> Tuple[int, str]:
+    """Resolve either numeric ticket PK (e.g., "1017") or textual public ticket_id
+    (e.g., "TCK-0001017") to a tuple of (id, ticket_id). Raises 404 if not found.
+    """
+    is_numeric = False
+    try:
+        int(ident)
+        is_numeric = True
+    except Exception:
+        is_numeric = False
+
+    if is_numeric:
+        q = sb.table("tickets").select("id,ticket_id").eq("id", int(ident)).single()
+    else:
+        q = sb.table("tickets").select("id,ticket_id").eq("ticket_id", ident).single()
+    res = q.execute()
+    if getattr(res, "error", None) or not getattr(res, "data", None):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    data = res.data if isinstance(res.data, dict) else {}
+    return data.get("id"), data.get("ticket_id")
+
+
+def enrich_tickets_with_attachments(sb, tickets: List[dict]) -> List[dict]:
+    """
+    Given a list of ticket rows (each expected to have primary key `id`),
+    bulk-load attachments and attach them under `attachments` key.
+    Also adds a `file_url` to each attachment if `SUPABASE_URL` and
+    `ATTACHMENTS_BUCKET` are configured.
+    """
+    if not tickets:
+        return tickets
+
+    ids: List[int] = []
+    for row in tickets:
+        if isinstance(row, dict) and row.get("id") is not None:
+            ids.append(row.get("id"))
+
+    attachments_map: Dict[int, List[dict]] = {}
+    if ids:
+        ares = (
+            sb.table("ticket_attachments")
+              .select("*")
+              .in_("ticket_id", ids)
+              .order("created_at")
+              .execute()
+        )
+        if getattr(ares, "error", None):
+            raise HTTPException(status_code=502, detail=str(ares.error))
+
+        public_base = None
+        if SUPABASE_URL and ATTACHMENTS_BUCKET:
+            public_base = f"{SUPABASE_URL}/storage/v1/object/public/{ATTACHMENTS_BUCKET}"
+
+        for att in ares.data or []:
+            tid = att.get("ticket_id")
+            if tid is None:
+                continue
+            if public_base and att.get("file_path"):
+                att = {**att, "file_url": f"{public_base}/{att['file_path']}"}
+            attachments_map.setdefault(tid, []).append(att)
+
+    enriched: List[dict] = []
+    for row in tickets:
+        if not isinstance(row, dict):
+            enriched.append(row)
+            continue
+        tid = row.get("id")
+        enriched.append({**row, "attachments": attachments_map.get(tid, [])})
+
+    return enriched

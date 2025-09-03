@@ -287,3 +287,9 @@ class TicketsPageFormattedWithAttachments(BaseModel):
     offset: int
     next_offset: Optional[int]
     data: List[TicketFormattedWithAttachmentsOut]
+
+
+class TicketsListWithCountWithAttachments(BaseModel):
+    count: Optional[int] = None
+    limit: int
+    data: List[TicketFormattedWithAttachmentsOut]

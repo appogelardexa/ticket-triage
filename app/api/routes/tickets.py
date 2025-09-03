@@ -23,12 +23,15 @@ from app.models.schemas import (
     TicketCreatedWithAttachmentsOut,
     TicketFormattedWithAttachmentsOut,
     TicketsPageFormattedWithAttachments,
+    TicketsListWithCountWithAttachments,
 )
 from app.services.tickets_service import (
     resolve_ticket_create_refs,
     build_ticket_insertable,
     build_utc_range,
-    upload_attachments_for_ticket
+    upload_attachments_for_ticket,
+    get_ticket_pk_and_public_id,
+    enrich_tickets_with_attachments,
 )
 
 
@@ -39,66 +42,66 @@ ATTACHMENTS_BUCKET = os.getenv("SUPABASE_TICKET_ATTACHMENTS_BUCKET")
 
 router = APIRouter(tags=["tickets"])
 
-@router.post("/create", response_model=TicketFormattedOut, status_code=201, summary="Create ticket (resolve names to IDs)")
-def create_ticket(payload: TicketCreateInputV3):
-    """
-    Create a new ticket in the `tickets` table and return the fully formatted record.
+# @router.post("/create", response_model=TicketFormattedOut, status_code=201, summary="Create ticket (resolve names to IDs)")
+# def create_ticket(payload: TicketCreateInputV3):
+#     """
+#     Create a new ticket in the `tickets` table and return the fully formatted record.
 
-    - Input: a `TicketCreateInputV3` payload.
-    * References to related entities (e.g., status, priority, channel) are resolved
-        to their internal IDs before insertion.
-    - The resolved payload is inserted into the `tickets` table.
-    - On success, the created row’s `ticket_id` is retrieved and used to query the
-    `tickets_formatted` view, ensuring the response matches the formatted schema.
+#     - Input: a `TicketCreateInputV3` payload.
+#     * References to related entities (e.g., status, priority, channel) are resolved
+#         to their internal IDs before insertion.
+#     - The resolved payload is inserted into the `tickets` table.
+#     - On success, the created row’s `ticket_id` is retrieved and used to query the
+#     `tickets_formatted` view, ensuring the response matches the formatted schema.
 
-    Response:
-    - Returns the created ticket record from `tickets_formatted` with normalized fields.
+#     Response:
+#     - Returns the created ticket record from `tickets_formatted` with normalized fields.
 
-    Errors:
-    - 502 if the insert fails, no `ticket_id` is returned, or the created ticket
-    cannot be retrieved from the formatted view.
-    """
+#     Errors:
+#     - 502 if the insert fails, no `ticket_id` is returned, or the created ticket
+#     cannot be retrieved from the formatted view.
+#     """
 
-    sb = get_supabase()
+#     sb = get_supabase()
 
-    data = resolve_ticket_create_refs(sb, payload)
-    insertable = build_ticket_insertable(data)
+#     data = resolve_ticket_create_refs(sb, payload)
+#     insertable = build_ticket_insertable(data)
 
-    res = (
-        sb.table("tickets")
-          .insert(insertable)
-          .execute()
-    )
+#     res = (
+#         sb.table("tickets")
+#           .insert(insertable)
+#           .execute()
+#     )
 
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
+#     if getattr(res, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res.error))
 
-    # Normalize insert response (Supabase may return list of rows)
-    row = None
-    if isinstance(res.data, list):
-        row = res.data[0] if res.data else None
-    else:
-        row = res.data
-    ticket_id = row.get("ticket_id") if isinstance(row, dict) else None
-    if not ticket_id:
-        raise HTTPException(status_code=502, detail="Failed to retrieve created ticket_id")
+#     # Normalize insert response (Supabase may return list of rows)
+#     row = None
+#     if isinstance(res.data, list):
+#         row = res.data[0] if res.data else None
+#     else:
+#         row = res.data
+#     ticket_id = row.get("ticket_id") if isinstance(row, dict) else None
+#     if not ticket_id:
+#         raise HTTPException(status_code=502, detail="Failed to retrieve created ticket_id")
 
-    res2 = (
-        sb.table("tickets_formatted")
-          .select("*")
-          .eq("ticket_id", ticket_id)
-          .single()
-          .execute()
-    )
-    if getattr(res2, "error", None):
-        raise HTTPException(status_code=502, detail=str(res2.error))
-    if not getattr(res2, "data", None):
-        raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
-    return res2.data
+#     res2 = (
+#         sb.table("tickets_formatted")
+#           .select("*")
+#           .eq("ticket_id", ticket_id)
+#           .single()
+#           .execute()
+#     )
+#     if getattr(res2, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res2.error))
+#     if not getattr(res2, "data", None):
+#         raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
+#     return res2.data
 
 
 @router.post(
-    "/create-with-attachments",
+    "/create",
     response_model=TicketCreatedWithAttachmentsOut,
     status_code=201,
     summary="Create ticket with optional attachments",
@@ -176,11 +179,8 @@ def create_ticket_with_attachments(
 )
 def list_ticket_attachments(ticket_id: str):
     sb = get_supabase()
-    # Get numeric id
-    t = sb.table("tickets").select("id").eq("ticket_id", ticket_id).single().execute()
-    if getattr(t, "error", None) or not getattr(t, "data", None):
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket_pk = t.data.get("id") if isinstance(t.data, dict) else None
+    # Support numeric or public id
+    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
     res = (
         sb.table("ticket_attachments")
           .select("*")
@@ -201,7 +201,9 @@ def list_ticket_attachments(ticket_id: str):
 )
 def add_ticket_attachments(ticket_id: str, files: Optional[List[UploadFile]] = File(None)):
     sb = get_supabase()
-    t = sb.table("tickets_formatted").select("*").eq("ticket_id", ticket_id).single().execute()
+    # Resolve public id for fetching formatted row
+    _, public_id = get_ticket_pk_and_public_id(sb, ticket_id)
+    t = sb.table("tickets_formatted").select("*").eq("ticket_id", public_id).single().execute()
     if getattr(t, "error", None) or not getattr(t, "data", None):
         raise HTTPException(status_code=404, detail="Ticket not found")
     ticket_row = t.data
@@ -217,10 +219,7 @@ def add_ticket_attachments(ticket_id: str, files: Optional[List[UploadFile]] = F
 def delete_ticket_attachment(ticket_id: str, attachment_id: int):
     sb = get_supabase()
     # Verify ticket and attachment match and fetch the object path
-    t = sb.table("tickets").select("id").eq("ticket_id", ticket_id).single().execute()
-    if getattr(t, "error", None) or not getattr(t, "data", None):
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket_pk = t.data.get("id") if isinstance(t.data, dict) else None
+    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
 
     a = (
         sb.table("ticket_attachments")
@@ -255,10 +254,7 @@ def delete_ticket_attachment(ticket_id: str, attachment_id: int):
 def replace_ticket_attachment(ticket_id: str, attachment_id: int, file: UploadFile = File(...)):
     sb = get_supabase()
     # Verify ticket and fetch attachment row
-    t = sb.table("tickets").select("id,ticket_id").eq("ticket_id", ticket_id).single().execute()
-    if getattr(t, "error", None) or not getattr(t, "data", None):
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket_pk = t.data.get("id") if isinstance(t.data, dict) else None
+    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
 
     a = (
         sb.table("ticket_attachments")
@@ -361,32 +357,7 @@ def list_tickets(
     has_more = len(data) == limit and (count is None or (offset + limit) < count)
     next_offset = (offset + limit) if has_more else None
 
-    # Bulk-fetch attachments for these tickets and attach inline
-    ids = [row.get("id") for row in data if isinstance(row, dict) and row.get("id") is not None]
-    attachments_map = {}
-    if ids:
-        ares = (
-            sb.table("ticket_attachments")
-              .select("*")
-              .in_("ticket_id", ids)
-              .order("created_at")
-              .execute()
-        )
-        if getattr(ares, "error", None):
-            raise HTTPException(status_code=502, detail=str(ares.error))
-        for att in ares.data or []:
-            tid = att.get("ticket_id")
-            if tid is None:
-                continue
-            attachments_map.setdefault(tid, []).append(att)
-
-    enriched: List[dict] = []
-    for row in data:
-        if not isinstance(row, dict):
-            continue
-        tid = row.get("id")
-        row = {**row, "attachments": attachments_map.get(tid, [])}
-        enriched.append(row)
+    enriched = enrich_tickets_with_attachments(sb, data)
 
     return {
         "count": count,
@@ -396,7 +367,7 @@ def list_tickets(
         "data": enriched,
     }
 
-@router.get("/by-date", response_model=TicketsListWithCount, summary="Filter tickets by created_at date")
+@router.get("/by-date", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by created_at date (with attachments)")
 def filter_tickets_by_date(
     on: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD)"),
     start_date: Optional[str] = Query(None, description="Start date inclusive (YYYY-MM-DD)"),
@@ -448,14 +419,16 @@ def filter_tickets_by_date(
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
 
+    rows = res.data or []
+    enriched = enrich_tickets_with_attachments(sb, rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
-        "data": res.data or [],
+        "data": enriched,
     }
 
 
-@router.get("/by-attributes", response_model=TicketsListWithCount, summary="Filter tickets by ter tickets by status, priority, or channel")
+@router.get("/by-attributes", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by status, priority, or channel (with attachments)")
 def filter_tickets_by_attributes(
     status: Optional[TicketStatus] = Query(None, description="Ticket status"),
     priority: Optional[TicketPriority] = Query(None, description="Ticket priority"),
@@ -520,10 +493,12 @@ def filter_tickets_by_attributes(
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
 
+    rows = res.data or []
+    enriched = enrich_tickets_with_attachments(sb, rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
-        "data": res.data or [],
+        "data": enriched,
     }
 
 
@@ -544,7 +519,7 @@ def get_ticket_by_ticket_id(ticket_id: str):
     return rows[0]
 
 
-@router.get("/", response_model=TicketsListWithCount, summary="Filter tickets by IDs")
+@router.get("/", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by IDs (with attachments)")
 def filter_tickets(
     assignee_id: Optional[int] = Query(None, description="Tickets assigned to this staff user"),
     department_id: Optional[int] = Query(None, description="Tickets under this department"),
@@ -601,10 +576,12 @@ def filter_tickets(
     res = qf.order("created_at", desc=sort).range(0, max(0, limit - 1)).execute()
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
+    rows = res.data or []
+    enriched = enrich_tickets_with_attachments(sb, rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
-        "data": res.data or [],
+        "data": enriched,
     }
 
 
