@@ -36,18 +36,22 @@ class ClientOut(BaseModel):
     email: Optional[str] = None
     domain: Optional[str] = None
     company_id: Optional[int] = None
+    profile_image_link: Optional[str] = None
 
 class ClientCreate(BaseModel):
     name: str
     email: Optional[str] = None
     domain: Optional[str] = None
     company_id: Optional[int] = None
+    # Optional direct URL if already uploaded elsewhere
+    profile_image_link: Optional[str] = None
 
 class ClientPatch(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     domain: Optional[str] = None
     company_id: Optional[int] = None
+    profile_image_link: Optional[str] = None
 
 class TicketCreateInputV1(BaseModel):
     summary: str

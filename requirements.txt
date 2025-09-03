@@ -5,3 +5,4 @@ python-dotenv>=1.0
 supabase>=2.3
 httpx>=0.25
 loguru>=0.7,<0.8
+python-multipart>=0.0.9
