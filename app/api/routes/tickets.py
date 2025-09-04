@@ -13,6 +13,7 @@ from app.models.schemas import (
     PriorityHistoryRow,
     TicketsPage,
     TicketFormattedOut,
+    TicketFormattedWithAttachmentsOut,
     TicketsPageFormatted,
     TicketCreateInputV3,
     TicketsListWithCount,
@@ -21,9 +22,11 @@ from app.models.schemas import (
     TicketChannel,
     TicketAttachmentOut,
     TicketCreatedWithAttachmentsOut,
-    TicketFormattedWithAttachmentsOut,
     TicketsPageFormattedWithAttachments,
     TicketsListWithCountWithAttachments,
+    TicketCommentOut,
+    TicketCommentCreate,
+    TicketCommentPatch,
 )
 from app.services.tickets_service import (
     resolve_ticket_create_refs,
@@ -172,25 +175,25 @@ def create_ticket_with_attachments(
     return {"ticket": ticket_row, "attachments": uploaded}
 
 
-@router.get(
-    "/{ticket_id}/attachments",
-    response_model=List[TicketAttachmentOut],
-    summary="List attachments for a ticket",
-)
-def list_ticket_attachments(ticket_id: str):
-    sb = get_supabase()
-    # Support numeric or public id
-    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
-    res = (
-        sb.table("ticket_attachments")
-          .select("*")
-          .eq("ticket_id", ticket_pk)
-          .order("created_at")
-          .execute()
-    )
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
-    return res.data or []
+# @router.get(
+#     "/{ticket_id}/attachments",
+#     response_model=List[TicketAttachmentOut],
+#     summary="List attachments for a ticket",
+# )
+# def list_ticket_attachments(ticket_id: str):
+#     sb = get_supabase()
+#     # Support numeric or public id
+#     ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
+#     res = (
+#         sb.table("ticket_attachments")
+#           .select("*")
+#           .eq("ticket_id", ticket_pk)
+#           .order("created_at")
+#           .execute()
+#     )
+#     if getattr(res, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res.error))
+#     return res.data or []
 
 
 @router.post(
@@ -315,6 +318,110 @@ def replace_ticket_attachment(ticket_id: str, attachment_id: int, file: UploadFi
     if getattr(res, "error", None) or not getattr(res, "data", None):
         raise HTTPException(status_code=502, detail="Failed to fetch updated attachment")
     return res.data
+
+
+@router.get(
+    "/{ticket_id}/comments",
+    response_model=List[TicketCommentOut],
+    summary="List comments for a ticket",
+)
+def list_ticket_comments(
+    ticket_id: str,
+    limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    is_private: Optional[bool] = Query(None, description="Filter by privacy flag"),
+):
+    sb = get_supabase()
+    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
+    q = (
+        sb.table("ticket_comments")
+          .select("*")
+          .eq("ticket_id", ticket_pk)
+          .order("created_at", desc=True)
+          .range(offset, offset + limit - 1)
+    )
+    if is_private is not None:
+        q = q.eq("is_private", is_private)
+    res = q.execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+    return res.data or []
+
+
+@router.post(
+    "/{ticket_id}/comments",
+    response_model=TicketCommentOut,
+    status_code=201,
+    summary="Add a comment to a ticket",
+)
+def add_ticket_comment(ticket_id: str, payload: TicketCommentCreate):
+    sb = get_supabase()
+    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
+
+    if not payload.internal_staff_id:
+        raise HTTPException(status_code=400, detail="internal_staff_id is required")
+
+    data = payload.model_dump(exclude_none=True)
+    data["ticket_id"] = ticket_pk
+
+    res = sb.table("ticket_comments").insert(data).execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+
+    row = res.data[0] if isinstance(res.data, list) and res.data else res.data
+    if not row:
+        # Fallback: fetch latest inserted for this ticket by created_at
+        sel = (
+            sb.table("ticket_comments")
+              .select("*")
+              .eq("ticket_id", ticket_pk)
+              .order("created_at", desc=True)
+              .limit(1)
+              .execute()
+        )
+        if getattr(sel, "error", None) or not getattr(sel, "data", None):
+            raise HTTPException(status_code=502, detail="Failed to fetch created comment")
+        return sel.data[0]
+    return row
+
+
+@router.put(
+    "/comments/{comment_id}",
+    response_model=TicketCommentOut,
+    summary="Update a comment",
+)
+def update_ticket_comment(comment_id: int, patch: TicketCommentPatch):
+    sb = get_supabase()
+    data = patch.model_dump(exclude_none=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    res = sb.table("ticket_comments").update(data).eq("id", comment_id).execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+
+    sel = sb.table("ticket_comments").select("*").eq("id", comment_id).single().execute()
+    if getattr(sel, "error", None) or not getattr(sel, "data", None):
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return sel.data
+
+
+@router.delete(
+    "/comments/{comment_id}",
+    status_code=204,
+    summary="Delete a comment",
+)
+def delete_ticket_comment(comment_id: int):
+    sb = get_supabase()
+    # Ensure it exists for 404
+    sel = sb.table("ticket_comments").select("id").eq("id", comment_id).single().execute()
+    if getattr(sel, "error", None) or not getattr(sel, "data", None):
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    d = sb.table("ticket_comments").delete().eq("id", comment_id).execute()
+    if getattr(d, "error", None):
+        raise HTTPException(status_code=502, detail=str(d.error))
+    return Response(status_code=204)
 
 @router.get("/paginated", response_model=TicketsPageFormattedWithAttachments, summary="Fetch a paginated list of tickets (with attachments)")
 def list_tickets(
@@ -585,40 +692,135 @@ def filter_tickets(
     }
 
 
-@router.patch("/{ticket_id}", response_model=TicketFormattedOut, summary="Update ticket by ticket_id")
-def update_ticket(ticket_id: str, patch: TicketPatch):
+# @router.patch("/{ticket_id}", response_model=TicketFormattedOut, summary="Update ticket by ticket_id")
+# def update_ticket(ticket_id: str, patch: TicketPatch):
+#     sb = get_supabase()
+#     data = patch.model_dump(exclude_none=True)
+#     if not data:
+#         raise HTTPException(status_code=400, detail="No fields to update")
+
+#     # Update the base ticket row
+#     res = (
+#         sb.table("tickets")
+#           .update(data)
+#           .eq("ticket_id", ticket_id)
+#         #   .select("id,ticket_id")
+#         #   .single()
+#           .execute()
+#     )
+#     if getattr(res, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res.error))
+#     if not getattr(res, "data", None):
+#         raise HTTPException(status_code=404, detail="Ticket not found")
+
+#     # Return the formatted view of the updated ticket
+#     res2 = (
+#         sb.table("tickets_formatted")
+#           .select("*")
+#           .eq("ticket_id", ticket_id)
+#           .single()
+#           .execute()
+#     )
+#     if getattr(res2, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res2.error))
+#     if not getattr(res2, "data", None):
+#         raise HTTPException(status_code=404, detail="Ticket not found after update")
+#     return res2.data
+
+
+@router.patch(
+    "/{ticket_id}",
+    response_model=TicketFormattedWithAttachmentsOut,
+    summary="Update ticket by Ticket ID",
+)
+def update_ticket_with_attachments(
+    ticket_id: str,
+    # TicketPatch fields via Form to support multipart
+    summary: Optional[str] = Form(None),
+    status: Optional[TicketStatus] = Form(None),
+    priority: Optional[TicketPriority] = Form(None),
+    channel: Optional[TicketChannel] = Form(None),
+    client_id: Optional[int] = Form(None),
+    assignee_id: Optional[int] = Form(None),
+    department_id: Optional[int] = Form(None),
+    category_id: Optional[int] = Form(None),
+    body: Optional[str] = Form(None),
+    files: Optional[List[UploadFile]] = File(None),
+):
     sb = get_supabase()
-    data = patch.model_dump(exclude_none=True)
-    if not data:
-        raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Update the base ticket row
-    res = (
-        sb.table("tickets")
-          .update(data)
-          .eq("ticket_id", ticket_id)
-        #   .select("id,ticket_id")
-        #   .single()
-          .execute()
-    )
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
-    if not getattr(res, "data", None):
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    # Build patch dict from provided form fields
+    patch_data = {
+        "summary": summary,
+        "status": status,
+        "priority": priority,
+        "channel": channel,
+        "client_id": client_id,
+        "assignee_id": assignee_id,
+        "department_id": department_id,
+        "category_id": category_id,
+        "body": body,
+    }
+    data = {k: v for k, v in patch_data.items() if v is not None}
 
-    # Return the formatted view of the updated ticket
-    res2 = (
+    # If there are field updates, apply them
+    if data:
+        res = (
+            sb.table("tickets")
+              .update(data)
+              .eq("ticket_id", ticket_id)
+              .execute()
+        )
+        if getattr(res, "error", None):
+            raise HTTPException(status_code=502, detail=str(res.error))
+        if not getattr(res, "data", None):
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # If new files are provided, replace existing attachments
+    if files:
+        ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
+
+        # Load existing attachments to collect storage paths
+        ares = (
+            sb.table("ticket_attachments")
+              .select("id,file_path")
+              .eq("ticket_id", ticket_pk)
+              .execute()
+        )
+        if getattr(ares, "error", None):
+            raise HTTPException(status_code=502, detail=str(ares.error))
+
+        paths = [row.get("file_path") for row in (ares.data or []) if isinstance(row, dict) and row.get("file_path")]
+        # Best-effort storage removal
+        try:
+            if paths:
+                sb.storage.from_(ATTACHMENTS_BUCKET).remove(paths)
+        except Exception:
+            pass
+
+        # Delete DB rows
+        dres = sb.table("ticket_attachments").delete().eq("ticket_id", ticket_pk).execute()
+        if getattr(dres, "error", None):
+            raise HTTPException(status_code=502, detail=str(dres.error))
+
+    # Fetch the formatted row (exists regardless of whether we changed fields)
+    t = (
         sb.table("tickets_formatted")
           .select("*")
           .eq("ticket_id", ticket_id)
           .single()
           .execute()
     )
-    if getattr(res2, "error", None):
-        raise HTTPException(status_code=502, detail=str(res2.error))
-    if not getattr(res2, "data", None):
+    if getattr(t, "error", None) or not getattr(t, "data", None):
         raise HTTPException(status_code=404, detail="Ticket not found after update")
-    return res2.data
+    ticket_row = t.data
+
+    # Upload new files if provided
+    uploaded = upload_attachments_for_ticket(sb, ticket_row, files)
+
+    # Re-enrich to include final attachments
+    enriched = enrich_tickets_with_attachments(sb, [ticket_row])
+    return enriched[0] if enriched else {**ticket_row, "attachments": uploaded or []}
 
 
 @router.delete("/{ticket_id}", status_code=204, summary="Delete ticket by ticket_id")
@@ -641,3 +843,63 @@ def delete_ticket(ticket_id: str):
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     return Response(status_code=204)
+
+
+@router.get(
+    "/staff/{staff_id}",
+    response_model=TicketsListWithCountWithAttachments,
+    summary="List tickets assigned to a staff user (with attachments)",
+)
+def list_tickets_for_staff_user(
+    staff_id: int,
+    sort: bool = Query(True, description="True=newest first; False=oldest first"),
+    limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+):
+    sb = get_supabase()
+    q = (
+        sb.table("tickets_detailed")
+          .select("*", count="exact")
+          .eq("assignee_id", staff_id)
+          .order("created_at", desc=sort)
+          .limit(limit)
+    )
+    res = q.execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+    rows = res.data or []
+    enriched = enrich_tickets_with_attachments(sb, rows)
+    return {
+        "count": getattr(res, "count", None),
+        "limit": limit,
+        "data": enriched,
+    }
+
+
+@router.get(
+    "/user/{client_id}",
+    response_model=TicketsListWithCountWithAttachments,
+    summary="List tickets requested by a client (with attachments)",
+)
+def list_tickets_for_client(
+    client_id: int,
+    sort: bool = Query(True, description="True=newest first; False=oldest first"),
+    limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+):
+    sb = get_supabase()
+    q = (
+        sb.table("tickets_detailed")
+          .select("*", count="exact")
+          .eq("client_id", client_id)
+          .order("created_at", desc=sort)
+          .limit(limit)
+    )
+    res = q.execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+    rows = res.data or []
+    enriched = enrich_tickets_with_attachments(sb, rows)
+    return {
+        "count": getattr(res, "count", None),
+        "limit": limit,
+        "data": enriched,
+    }

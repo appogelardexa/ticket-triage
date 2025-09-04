@@ -257,6 +257,33 @@ class CategoryPatch(BaseModel):
     default_slack_channel: Optional[str] = None
     auto_assign_to_id: Optional[int] = None
 
+# Category Default Assignees
+class CategoryDefaultAssigneeOut(BaseModel):
+    id: int
+    category_id: int
+    staff_id: int
+    priority: int = 100
+    weight: int = 1
+    is_fallback: bool = False
+    active: bool = True
+    created_at: Optional[datetime] = None
+
+class CategoryDefaultAssigneeCreate(BaseModel):
+    staff_id: int
+    priority: int = 100
+    weight: int = 1
+    is_fallback: bool = False
+    active: bool = True
+
+class CategoryDefaultAssigneePatch(BaseModel):
+    priority: Optional[int] = None
+    weight: Optional[int] = None
+    is_fallback: Optional[bool] = None
+    active: Optional[bool] = None
+
+class CategoryWithDefaultAssigneesOut(CategoryOut):
+    default_assignees: List[CategoryDefaultAssigneeOut] = []
+
 # ---------------------------------
 # Ticket Attachments (metadata only)
 # ---------------------------------
@@ -293,3 +320,27 @@ class TicketsListWithCountWithAttachments(BaseModel):
     count: Optional[int] = None
     limit: int
     data: List[TicketFormattedWithAttachmentsOut]
+
+
+# -----------------
+# Ticket Comments
+# -----------------
+class TicketCommentOut(BaseModel):
+    id: int
+    ticket_id: int  # FK to tickets.id
+    internal_staff_id: int
+    body: str
+    is_private: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class TicketCommentCreate(BaseModel):
+    internal_staff_id: int
+    body: str
+    is_private: Optional[bool] = False
+
+
+class TicketCommentPatch(BaseModel):
+    body: Optional[str] = None
+    is_private: Optional[bool] = None
