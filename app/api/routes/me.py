@@ -1,0 +1,103 @@
+from typing import Optional
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.api.deps import require_user
+from app.core.config import get_supabase, get_settings
+from app.models.schemas import ClientOut, ClientPatch
+
+
+router = APIRouter(prefix="/api/me", tags=["me"])
+
+
+def _resolve_self_client(sb, user: dict) -> dict:
+    """Find the client row for the current user.
+
+    Prefers the client_id present in user context; otherwise looks up by
+    clients.user_id or clients.email.
+    Returns the client row dict or raises 404.
+    """
+    client_id = (user or {}).get("client_id")
+    if client_id:
+        res = sb.table("clients").select("*").eq("id", client_id).single().execute()
+        if not getattr(res, "error", None) and getattr(res, "data", None):
+            return res.data
+
+    # Fallback: lookup by user_id/email
+    user_id = (user or {}).get("user_id")
+    email = (user or {}).get("email")
+    q = sb.table("clients").select("*").limit(1)
+    # If email can be null, still safe due to OR syntax
+    if user_id and email:
+        q = q.or_(f"user_id.eq.{user_id},email.eq.{email}")
+    elif user_id:
+        q = q.eq("user_id", user_id)
+    elif email:
+        q = q.eq("email", email)
+    res = q.execute()
+    rows = res.data or []
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    raise HTTPException(status_code=404, detail="Client not found for current user")
+
+
+@router.get("/client", response_model=ClientOut, summary="Get my client profile")
+def get_my_client(user=Depends(require_user)):
+    sb = get_supabase()
+    row = _resolve_self_client(sb, user)
+    return row
+
+
+@router.put("", response_model=ClientOut, summary="Update my client profile")
+def update_my_client(patch: ClientPatch, user=Depends(require_user)):
+    sb = get_supabase()
+    current = _resolve_self_client(sb, user)
+
+    data = patch.model_dump(exclude_none=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    res = sb.table("clients").update(data).eq("id", current.get("id")).execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+
+    # Return fresh row
+    got = sb.table("clients").select("*").eq("id", current.get("id")).single().execute()
+    if getattr(got, "error", None) or not getattr(got, "data", None):
+        raise HTTPException(status_code=404, detail="Client not found after update")
+    return got.data
+
+
+@router.put("/password", status_code=204, summary="Change my password")
+def change_my_password(password: str, user=Depends(require_user)):
+    new_password =  password # (body or {}).get("password") 
+    if not new_password or not isinstance(new_password, str) or len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    s = get_settings()
+    if not s.SUPABASE_URL or not s.SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=500, detail="Server auth misconfigured")
+
+    uid = (user or {}).get("user_id")
+    if not uid:
+        raise HTTPException(status_code=400, detail="Missing authenticated user id")
+
+    url = f"{s.SUPABASE_URL}/auth/v1/admin/users/{uid}"
+    headers = {
+        "Authorization": f"Bearer {s.SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": s.SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = httpx.put(url, json={"password": new_password}, headers=headers, timeout=15)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Password update failed: {exc}")
+
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise HTTPException(status_code=502, detail=f"Password update failed: {detail}")
+    return {}
+

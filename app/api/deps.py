@@ -1,0 +1,106 @@
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase import create_client
+
+from app.core.config import get_settings, get_supabase
+
+
+bearer = HTTPBearer(auto_error=False)
+
+
+def require_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> dict:
+    """Validate a Supabase access token, load role + domain ids, and return user context.
+
+    Returns a dict: { user_id, email, role, staff_id, client_id }
+    """
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    jwt = credentials.credentials
+    sb_admin = get_supabase()
+
+    # Validate token and fetch user via Supabase Admin
+    res = sb_admin.auth.get_user(jwt)
+    if getattr(res, "error", None) or not getattr(res, "user", None):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user = res.user
+    user_id = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None)
+    email = getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: missing user id")
+
+    # Load role from user_profiles
+    role = None
+    try:
+        prof = (
+            sb_admin.table("user_profiles")
+            .select("role")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        if not getattr(prof, "error", None) and getattr(prof, "data", None):
+            role = prof.data.get("role") if isinstance(prof.data, dict) else None
+    except Exception:
+        role = None
+
+    # Optional: lookup linked domain ids
+    staff_id = None
+    client_id = None
+    try:
+        sres = (
+            sb_admin.table("internal_staff").select("id").eq("user_id", user_id).single().execute()
+        )
+        if not getattr(sres, "error", None) and getattr(sres, "data", None):
+            staff_id = sres.data.get("id") if isinstance(sres.data, dict) else None
+    except Exception:
+        staff_id = None
+    try:
+        cres = (
+            sb_admin.table("clients").select("id").eq("user_id", user_id).single().execute()
+        )
+        if not getattr(cres, "error", None) and getattr(cres, "data", None):
+            client_id = cres.data.get("id") if isinstance(cres.data, dict) else None
+    except Exception:
+        client_id = None
+
+    return {
+        "user_id": user_id,
+        "email": email,
+        "role": role,
+        "staff_id": staff_id,
+        "client_id": client_id,
+        "jwt": jwt,
+    }
+
+
+def get_user_supabase(jwt: str):
+    """Build a Supabase client that uses the provided user access token.
+
+    This ensures PostgREST/Storage calls run under RLS as the user (auth.uid()).
+    """
+    s = get_settings()
+    client = create_client(s.SUPABASE_URL, s.SUPABASE_ANON_KEY or "")
+    try:
+        # Set auth for PostgREST and Storage
+        client.postgrest.auth(jwt)
+        try:
+            client.storage.set_auth(jwt)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return client
+
+
+def require_admin(user=Depends(require_user)) -> dict:
+    """Ensure the authenticated user has an admin role.
+
+    Accepts roles 'admin' or 'superadmin'. Adjust as needed.
+    Returns the same user dict on success.
+    """
+    role = (user or {}).get("role")
+    if role not in {"admin"}:
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return user

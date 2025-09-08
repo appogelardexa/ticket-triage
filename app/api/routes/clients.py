@@ -3,23 +3,25 @@ from uuid import uuid4
 import os
 import mimetypes
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
+import httpx
 from app.core.config import get_supabase
 from app.models.schemas import ClientOut, ClientCreate, ClientPatch
 
-router = APIRouter(tags=["clients"])
+# router = APIRouter(tags=["clients"])
 
 # Allow bucket to be configured via env; default to common name 'avatars'
 AVATARS_BUCKET = os.getenv("SUPABASE_AVATARS_BUCKET")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-@router.get("/", summary="List clients")
+# @router.get("/", summary="List clients")
 def list_clients(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     sb = get_supabase()
     res = (sb.table("clients").select("*").order("id").range(offset, offset+limit-1).execute())
     return res.data or []
 
 
-@router.get("/search", summary="Search clients by email or name")
+# @router.get("/search", summary="Search clients by email or name")
 def search_clients(
     email: Optional[str] = Query(None, description="Exact email match"),
     name: Optional[str] = Query(None, min_length=1, description="Client name to search"),
@@ -47,7 +49,7 @@ def search_clients(
     return res.data or []
 
 
-@router.get("/{client_id}", response_model=ClientOut, summary="Get client by id")
+# @router.get("/{client_id}", response_model=ClientOut, summary="Get client by id")
 def get_client_by_id(client_id: int):
     sb = get_supabase()
     res = (
@@ -64,7 +66,7 @@ def get_client_by_id(client_id: int):
     return rows[0]
 
 
-@router.post("/", response_model=ClientOut, status_code=201, summary="Create client")
+# @router.post("/", response_model=ClientOut, status_code=201, summary="Create client")
 def create_client(payload: ClientCreate):
     sb = get_supabase()
     # Perform insert
@@ -95,7 +97,7 @@ def create_client(payload: ClientCreate):
     raise HTTPException(status_code=502, detail="Failed to retrieve created client")
 
 
-@router.post("/with-image", response_model=ClientOut, status_code=201, summary="Create client with profile image upload")
+# @router.post("/with-image", response_model=ClientOut, status_code=201, summary="Create client with profile image upload")
 def create_client_with_image(
     name: str = Form(...),
     email: Optional[str] = Form(None),
@@ -153,25 +155,28 @@ def create_client_with_image(
                 pass
             content = profile_image.file.read()
 
-            # Upload; allow overwrite if same name somehow reoccurs
-            up = sb.storage.from_(bucket).upload(
-                path=object_path,
-                file=content,
-                file_options={
-                    # Supabase storage expects header-like option keys with string values
-                    "content-type": profile_image.content_type or "application/octet-stream",
-                    "x-upsert": "true",
-                },
-            )
-            # Normalize possible shapes of the response to detect errors
-            up_err = None
-            if isinstance(up, dict):
-                up_err = up.get("error")
-            else:
-                up_err = getattr(up, "error", None)
-            if up_err:
-                raise HTTPException(status_code=502, detail=f"Storage upload failed: {up_err}")
-            
+            # Direct HTTP PUT with service-role Authorization to bypass Storage RLS
+            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+                raise HTTPException(status_code=500, detail="Storage upload misconfigured on server")
+
+            url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{object_path}"
+            headers = {
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "x-upsert": "true",
+                "content-type": profile_image.content_type or "application/octet-stream",
+            }
+            try:
+                resp = httpx.put(url, content=content, headers=headers, timeout=30)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Failed to upload profile image: {e}")
+            if resp.status_code >= 400:
+                try:
+                    err = resp.json()
+                except Exception:
+                    err = resp.text
+                raise HTTPException(status_code=502, detail=f"Failed to upload profile image: {err}")
+
             # Get public URL
             public_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{object_path}"
 
@@ -205,7 +210,7 @@ def create_client_with_image(
     return rows[0]
 
 
-@router.patch("/{client_id}", response_model=ClientOut, summary="Update client by id")
+# @router.patch("/{client_id}", response_model=ClientOut, summary="Update client by id")
 def update_client(client_id: int, patch: ClientPatch):
     sb = get_supabase()
     data = patch.model_dump(exclude_none=True)
@@ -236,7 +241,7 @@ def update_client(client_id: int, patch: ClientPatch):
     return rows[0]
 
 
-@router.delete("/{client_id}", status_code=204, summary="Delete client by id")
+# @router.delete("/{client_id}", status_code=204, summary="Delete client by id")
 def delete_client(client_id: int):
     sb = get_supabase()
 

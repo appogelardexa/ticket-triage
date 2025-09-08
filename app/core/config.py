@@ -11,9 +11,9 @@ except Exception:
     pass
 
 class Settings:
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
-    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL")
+    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")
+    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     ENV: str = os.getenv("ENV", "dev")
 
 @lru_cache
@@ -23,7 +23,16 @@ def get_settings() -> Settings:
 @lru_cache
 def get_supabase() -> Client:
     s = get_settings()
+    # Prefer service role for server-side operations; fallback to anon.
     key = s.SUPABASE_SERVICE_ROLE_KEY or s.SUPABASE_ANON_KEY
     if not s.SUPABASE_URL or not key:
         raise RuntimeError("Missing SUPABASE_URL or SUPABASE_*_KEY")
-    return create_client(s.SUPABASE_URL, key)
+
+    client = create_client(s.SUPABASE_URL, key)
+    # Ensure PostgREST uses Authorization header for RLS-aware queries.
+    try:
+        client.postgrest.auth(key)
+    except Exception:
+        pass
+    # Storage uploads now use direct HTTP with service role in tickets_service.py.
+    return client

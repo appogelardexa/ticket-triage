@@ -3,6 +3,7 @@ import os
 import mimetypes
 
 from typing import Optional, List, Tuple, Dict
+import httpx
 from fastapi import HTTPException, UploadFile
 from app.models.schemas import TicketCreateInputV3
 
@@ -10,6 +11,7 @@ from app.models.schemas import TicketCreateInputV3
 # Storage config
 ATTACHMENTS_BUCKET = os.getenv("SUPABASE_TICKET_ATTACHMENTS_BUCKET")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 
 
@@ -206,32 +208,50 @@ def upload_attachments_for_ticket(
             except Exception:
                 pass
             content = f.file.read()
+            
+            # Upload via direct HTTP with service-role Authorization to bypass RLS
+            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+                raise HTTPException(status_code=502, detail="Storage upload misconfigured: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
 
-            up = sb.storage.from_(bucket).upload(
-                path=object_path,
-                file=content,
-                file_options={
-                    "content-type": f.content_type or "application/octet-stream",
-                    "x-upsert": "true",
-                },
-            )
-            up_err = None
-            if isinstance(up, dict):
-                up_err = up.get("error")
-            else:
-                up_err = getattr(up, "error", None)
-            if up_err:
-                raise HTTPException(status_code=502, detail=f"Storage upload failed: {up_err}")
+            url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{object_path}"
+            headers = {
+                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                "x-upsert": "true",
+                "content-type": f.content_type or "application/octet-stream",
+            }
+            try:
+                resp = httpx.put(url, content=content, headers=headers, timeout=30)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"[STORAGE] upload failed (bucket={bucket}, path={object_path}): {e}",
+                )
+            if resp.status_code >= 400:
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = resp.text
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"[STORAGE] upload failed (bucket={bucket}, path={object_path}): {body}",
+                )
 
-            ins = sb.table("ticket_attachments").insert({
-                "ticket_id": ticket_pk,
-                "file_path": object_path,  # store relative path
-                "filename": orig_name,
-                "mime_type": getattr(f, "content_type", None),
-                "size_bytes": len(content) if content is not None else None,
-                "file_url": f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{object_path}",
+            try:
+                ins = sb.table("ticket_attachments").insert({
+                    "ticket_id": ticket_pk,
+                    "file_path": object_path,  # store relative path
+                    "filename": orig_name,
+                    "mime_type": getattr(f, "content_type", None),
+                    "size_bytes": len(content) if content is not None else None,
+                    "file_url": f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{object_path}",
 
-            }).execute()
+                }).execute()
+
+            except Exception as e:
+                raise HTTPException(status_code=502,
+                    detail=f"[DB] insert into ticket_attachments failed (ticket_id={ticket_pk}): {e}")
+
             if getattr(ins, "error", None):
                 raise HTTPException(status_code=502, detail=str(ins.error))
 

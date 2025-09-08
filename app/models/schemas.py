@@ -1,7 +1,7 @@
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 class TicketStatus(str, Enum):
     new = "new"
@@ -29,6 +29,29 @@ class TicketChannel(str, Enum):
     phone = "phone"
     manual = "manual"
     api = "api"
+
+
+# -----------------
+# Auth Schemas
+# -----------------
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = None
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+
+class ForgotIn(BaseModel):
+    email: EmailStr
+    redirect_to: Optional[str] = None
 
 class ClientOut(BaseModel):
     id: int

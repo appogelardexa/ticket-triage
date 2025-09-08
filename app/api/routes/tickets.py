@@ -3,7 +3,8 @@ from uuid import uuid4
 import os
 import mimetypes
 from datetime import date, datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, File, Form
+from app.api.deps import require_user, get_user_supabase
+from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, File, Form, Depends
 from app.core.config import get_supabase
 from app.models.schemas import (
     TicketPatch,
@@ -45,64 +46,6 @@ ATTACHMENTS_BUCKET = os.getenv("SUPABASE_TICKET_ATTACHMENTS_BUCKET")
 
 router = APIRouter(tags=["tickets"])
 
-# @router.post("/create", response_model=TicketFormattedOut, status_code=201, summary="Create ticket (resolve names to IDs)")
-# def create_ticket(payload: TicketCreateInputV3):
-#     """
-#     Create a new ticket in the `tickets` table and return the fully formatted record.
-
-#     - Input: a `TicketCreateInputV3` payload.
-#     * References to related entities (e.g., status, priority, channel) are resolved
-#         to their internal IDs before insertion.
-#     - The resolved payload is inserted into the `tickets` table.
-#     - On success, the created row’s `ticket_id` is retrieved and used to query the
-#     `tickets_formatted` view, ensuring the response matches the formatted schema.
-
-#     Response:
-#     - Returns the created ticket record from `tickets_formatted` with normalized fields.
-
-#     Errors:
-#     - 502 if the insert fails, no `ticket_id` is returned, or the created ticket
-#     cannot be retrieved from the formatted view.
-#     """
-
-#     sb = get_supabase()
-
-#     data = resolve_ticket_create_refs(sb, payload)
-#     insertable = build_ticket_insertable(data)
-
-#     res = (
-#         sb.table("tickets")
-#           .insert(insertable)
-#           .execute()
-#     )
-
-#     if getattr(res, "error", None):
-#         raise HTTPException(status_code=502, detail=str(res.error))
-
-#     # Normalize insert response (Supabase may return list of rows)
-#     row = None
-#     if isinstance(res.data, list):
-#         row = res.data[0] if res.data else None
-#     else:
-#         row = res.data
-#     ticket_id = row.get("ticket_id") if isinstance(row, dict) else None
-#     if not ticket_id:
-#         raise HTTPException(status_code=502, detail="Failed to retrieve created ticket_id")
-
-#     res2 = (
-#         sb.table("tickets_formatted")
-#           .select("*")
-#           .eq("ticket_id", ticket_id)
-#           .single()
-#           .execute()
-#     )
-#     if getattr(res2, "error", None):
-#         raise HTTPException(status_code=502, detail=str(res2.error))
-#     if not getattr(res2, "data", None):
-#         raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
-#     return res2.data
-
-
 @router.post(
     "/create",
     response_model=TicketCreatedWithAttachmentsOut,
@@ -126,8 +69,12 @@ def create_ticket_with_attachments(
     message_id: Optional[str] = Form(None),
     thread_id: Optional[str] = Form(None),
     attachments: Optional[List[UploadFile]] = File(None),
+    user=Depends(require_user),
 ):
-    sb = get_supabase()
+    # Use user-scoped client so tickets insert/select respects RLS
+    sb_user = get_user_supabase(user["jwt"])
+    # Keep service-role client for Storage uploads and attachment metadata until Storage RLS is configured
+    sb_admin = get_supabase()
 
     payload = TicketCreateInputV3(
         summary=summary,
@@ -146,10 +93,10 @@ def create_ticket_with_attachments(
         thread_id=thread_id,
     )
 
-    data = resolve_ticket_create_refs(sb, payload)
+    data = resolve_ticket_create_refs(sb_user, payload)
     insertable = build_ticket_insertable(data)
 
-    res = sb.table("tickets").insert(insertable).execute()
+    res = sb_user.table("tickets").insert(insertable).execute()
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
 
@@ -159,7 +106,7 @@ def create_ticket_with_attachments(
         raise HTTPException(status_code=502, detail="Failed to retrieve created ticket_id")
 
     res2 = (
-        sb.table("tickets_formatted")
+        sb_user.table("tickets_formatted")
           .select("*")
           .eq("ticket_id", ticket_id)
           .single()
@@ -171,7 +118,7 @@ def create_ticket_with_attachments(
         raise HTTPException(status_code=502, detail="Created ticket not found in formatted view")
 
     ticket_row = res2.data
-    uploaded = upload_attachments_for_ticket(sb, ticket_row, attachments)
+    uploaded = upload_attachments_for_ticket(sb_admin, ticket_row, attachments)
     return {"ticket": ticket_row, "attachments": uploaded}
 
 
@@ -319,7 +266,6 @@ def replace_ticket_attachment(ticket_id: str, attachment_id: int, file: UploadFi
         raise HTTPException(status_code=502, detail="Failed to fetch updated attachment")
     return res.data
 
-
 @router.get(
     "/{ticket_id}/comments",
     response_model=List[TicketCommentOut],
@@ -330,22 +276,26 @@ def list_ticket_comments(
     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     is_private: Optional[bool] = Query(None, description="Filter by privacy flag"),
+    user=Depends(require_user),
 ):
-    sb = get_supabase()
-    ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
-    q = (
-        sb.table("ticket_comments")
-          .select("*")
-          .eq("ticket_id", ticket_pk)
-          .order("created_at", desc=True)
-          .range(offset, offset + limit - 1)
-    )
-    if is_private is not None:
-        q = q.eq("is_private", is_private)
-    res = q.execute()
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
-    return res.data or []
+    sb = get_user_supabase(user["jwt"])
+    try: 
+        ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
+        q = (
+            sb.table("ticket_comments")
+            .select("*")
+            .eq("ticket_id", ticket_pk)
+            .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
+        )
+        if is_private is not None:
+            q = q.eq("is_private", is_private)
+        res = q.execute()
+        if getattr(res, "error", None):
+            raise HTTPException(status_code=502, detail=str(res.error))
+        return res.data or []
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Upstream error while fetching comments") from exc
 
 
 @router.post(
@@ -354,8 +304,8 @@ def list_ticket_comments(
     status_code=201,
     summary="Add a comment to a ticket",
 )
-def add_ticket_comment(ticket_id: str, payload: TicketCommentCreate):
-    sb = get_supabase()
+def add_ticket_comment(ticket_id: str, payload: TicketCommentCreate, user=Depends(require_user)):
+    sb = get_user_supabase(user["jwt"])
     ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
 
     if not payload.internal_staff_id:
@@ -390,8 +340,8 @@ def add_ticket_comment(ticket_id: str, payload: TicketCommentCreate):
     response_model=TicketCommentOut,
     summary="Update a comment",
 )
-def update_ticket_comment(comment_id: int, patch: TicketCommentPatch):
-    sb = get_supabase()
+def update_ticket_comment(comment_id: int, patch: TicketCommentPatch, user=Depends(require_user)):
+    sb = get_user_supabase(user["jwt"])
     data = patch.model_dump(exclude_none=True)
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -411,8 +361,8 @@ def update_ticket_comment(comment_id: int, patch: TicketCommentPatch):
     status_code=204,
     summary="Delete a comment",
 )
-def delete_ticket_comment(comment_id: int):
-    sb = get_supabase()
+def delete_ticket_comment(comment_id: int, user=Depends(require_user)):
+    sb = get_user_supabase(user["jwt"])
     # Ensure it exists for 404
     sel = sb.table("ticket_comments").select("id").eq("id", comment_id).single().execute()
     if getattr(sel, "error", None) or not getattr(sel, "data", None):
@@ -428,6 +378,7 @@ def list_tickets(
     limit: int = Query(10, ge=1, le=100, description="Number of tickets to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     sort: bool = Query(False, description="True=descending (newest first), False=ascending"),
+    user=Depends(require_user),
 ):
     """
     Retrieve a paginated list of tickets from the `tickets_formatted` table.
@@ -448,9 +399,9 @@ def list_tickets(
     - 502 if the database query fails.
     """
 
-    sb = get_supabase()
+    sb_user = get_user_supabase(user["jwt"])
     res = (
-        sb.table("tickets_formatted")
+        sb_user.table("tickets_formatted")
           .select("*", count="exact")
           .order("created_at", desc=sort)
           .range(offset, offset + limit - 1)
@@ -464,7 +415,7 @@ def list_tickets(
     has_more = len(data) == limit and (count is None or (offset + limit) < count)
     next_offset = (offset + limit) if has_more else None
 
-    enriched = enrich_tickets_with_attachments(sb, data)
+    enriched = enrich_tickets_with_attachments(get_supabase(), data)
 
     return {
         "count": count,
@@ -481,6 +432,7 @@ def filter_tickets_by_date(
     end_date: Optional[str] = Query(None, description="End date inclusive (YYYY-MM-DD)"),
     sort: bool = Query(True, description="True=newest first; False=oldest first"),
     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+    user=Depends(require_user),
 ):
     """
     Retrieve tickets filtered by their `created_at` timestamp.
@@ -504,7 +456,7 @@ def filter_tickets_by_date(
     - 502 if the database query fails.
     """
 
-    sb = get_supabase()
+    sb = get_user_supabase(user["jwt"])
 
     if on is not None:
         start_at, end_at = build_utc_range(on=on)
@@ -527,7 +479,7 @@ def filter_tickets_by_date(
         raise HTTPException(status_code=502, detail=str(res.error))
 
     rows = res.data or []
-    enriched = enrich_tickets_with_attachments(sb, rows)
+    enriched = enrich_tickets_with_attachments(get_supabase(), rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
@@ -547,6 +499,7 @@ def filter_tickets_by_attributes(
     
     sort: bool = Query(True, description="True=newest first; False=oldest first"),
     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+    user=Depends(require_user),
 ):
     """
     Retrieve tickets filtered by one or more attributes: `status`, `priority`, or `channel`.
@@ -568,9 +521,7 @@ def filter_tickets_by_attributes(
     - 502 if the database query fails.
     """
 
-
-
-    sb = get_supabase()
+    sb = get_user_supabase(user["jwt"])
 
     # Require at least one filter to avoid unbounded result
     if not any([status, priority, channel]):
@@ -601,7 +552,7 @@ def filter_tickets_by_attributes(
         raise HTTPException(status_code=502, detail=str(res.error))
 
     rows = res.data or []
-    enriched = enrich_tickets_with_attachments(sb, rows)
+    enriched = enrich_tickets_with_attachments(get_supabase(), rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
@@ -610,20 +561,33 @@ def filter_tickets_by_attributes(
 
 
 @router.get("/{ticket_id}", response_model=TicketFormattedWithAttachmentsOut, summary="Get ticket by ticket_id (with attachments)")
-def get_ticket_by_ticket_id(ticket_id: str):
-    sb = get_supabase()
-    res = (
-        sb.table("tickets_formatted")
-          .select("*")
-          .eq("ticket_id", ticket_id)
-          .single()
-          .execute()
-    )
-    if getattr(res, "error", None) or not getattr(res, "data", None):
+def get_ticket_by_ticket_id(ticket_id: str, user=Depends(require_user)):
+    sb = get_user_supabase(user["jwt"])  # RLS-enforced
+    try:
+        res = (
+            sb.table("tickets_formatted")
+              .select("*")
+              .eq("ticket_id", ticket_id)
+              .limit(1)
+              .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Upstream error while fetching ticket") from exc
+
+    # Normalize result: Supabase may return a list or dict depending on driver
+    row = None
+    if isinstance(getattr(res, "data", None), list):
+        data_list = res.data or []
+        if data_list:
+            row = data_list[0]
+    elif isinstance(getattr(res, "data", None), dict):
+        row = res.data
+
+    if not isinstance(row, dict):
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    enriched = enrich_tickets_with_attachments(sb, [res.data])
-    return enriched[0] if enriched else res.data
+    enriched = enrich_tickets_with_attachments(get_supabase(), [row])
+    return enriched[0] if enriched else row
 
 
 @router.get("/", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by IDs (with attachments)")
@@ -635,13 +599,14 @@ def filter_tickets(
     client_id: Optional[int] = Query(None, description="Tickets for this client/requester"),
     sort: bool = Query(True, description="True=newest first; False=oldest first"),
     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+    user=Depends(require_user),
 ):
     """
     Filters tickets using any combination of the provided parameters.
     - Combination: All provided filters are combined with AND.
     - Required: At least one filter must be provided; otherwise returns 400
     """
-    sb = get_supabase()
+    sb = get_user_supabase(user["jwt"])
 
     # Require at least one filter to avoid unbounded result
     if not any([assignee_id, department_id, category_id, company_id, client_id]):
@@ -684,7 +649,7 @@ def filter_tickets(
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     rows = res.data or []
-    enriched = enrich_tickets_with_attachments(sb, rows)
+    enriched = enrich_tickets_with_attachments(get_supabase(), rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
@@ -854,8 +819,9 @@ def list_tickets_for_staff_user(
     staff_id: int,
     sort: bool = Query(True, description="True=newest first; False=oldest first"),
     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+    user=Depends(require_user),
 ):
-    sb = get_supabase()
+    sb = get_user_supabase(user["jwt"])
     q = (
         sb.table("tickets_detailed")
           .select("*", count="exact")
@@ -867,7 +833,7 @@ def list_tickets_for_staff_user(
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     rows = res.data or []
-    enriched = enrich_tickets_with_attachments(sb, rows)
+    enriched = enrich_tickets_with_attachments(get_supabase(), rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
@@ -884,8 +850,9 @@ def list_tickets_for_client(
     client_id: int,
     sort: bool = Query(True, description="True=newest first; False=oldest first"),
     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+    user=Depends(require_user),
 ):
-    sb = get_supabase()
+    sb = get_user_supabase(user["jwt"])
     q = (
         sb.table("tickets_detailed")
           .select("*", count="exact")
@@ -897,7 +864,7 @@ def list_tickets_for_client(
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     rows = res.data or []
-    enriched = enrich_tickets_with_attachments(sb, rows)
+    enriched = enrich_tickets_with_attachments(get_supabase(), rows)
     return {
         "count": getattr(res, "count", None),
         "limit": limit,
