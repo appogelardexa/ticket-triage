@@ -55,6 +55,7 @@ router = APIRouter(tags=["tickets"])
 def create_ticket_with_attachments(
     # TicketCreateInputV3 fields via Form to support multipart
     summary: str = Form(...),
+    title: Optional[str] = Form(None),
     status: Optional[TicketStatus] = Form(None),
     priority: Optional[TicketPriority] = Form(None),
     channel: Optional[TicketChannel] = Form(None),
@@ -78,6 +79,7 @@ def create_ticket_with_attachments(
 
     payload = TicketCreateInputV3(
         summary=summary,
+        title=title,
         status=status,
         priority=priority,
         channel=channel,
@@ -702,6 +704,7 @@ def update_ticket_with_attachments(
     ticket_id: str,
     # TicketPatch fields via Form to support multipart
     summary: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
     status: Optional[TicketStatus] = Form(None),
     priority: Optional[TicketPriority] = Form(None),
     channel: Optional[TicketChannel] = Form(None),
@@ -717,6 +720,7 @@ def update_ticket_with_attachments(
     # Build patch dict from provided form fields
     patch_data = {
         "summary": summary,
+        "title": title,
         "status": status,
         "priority": priority,
         "channel": channel,

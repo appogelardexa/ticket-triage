@@ -78,6 +78,7 @@ class ClientPatch(BaseModel):
 
 class TicketCreateInputV1(BaseModel):
     summary: str
+    title: Optional[str] = None
     status: TicketStatus = TicketStatus.new
     priority: TicketPriority = TicketPriority.normal
     channel: TicketChannel = TicketChannel.email
@@ -90,6 +91,7 @@ class TicketCreateInputV1(BaseModel):
 
 class TicketCreateInputV2(BaseModel):
     summary: str
+    title: Optional[str] = None
     status: Optional[TicketStatus] = TicketStatus.new
     priority: Optional[TicketPriority] = TicketPriority.P3
     channel: Optional[TicketChannel] = TicketChannel.email
@@ -116,6 +118,7 @@ class TicketCreateInputV2(BaseModel):
 
 class TicketCreateInputV3(BaseModel):
     summary: str
+    title: Optional[str] = None
     status: Optional[TicketStatus] = TicketStatus.new
     priority: Optional[TicketPriority] = TicketPriority.P3
     channel: Optional[TicketChannel] = TicketChannel.email
@@ -135,6 +138,7 @@ class TicketCreateInputV3(BaseModel):
 
 class TicketCreatePublic(BaseModel):
     summary: str
+    title: Optional[str] = None
     status: Optional[TicketStatus] = TicketStatus.new
     priority: Optional[TicketPriority] = TicketPriority.P3
     channel: Optional[TicketChannel] = TicketChannel.email
@@ -155,6 +159,7 @@ class TicketCreatePublic(BaseModel):
 
 class TicketPatch(BaseModel):
     summary: Optional[str] = None
+    title: Optional[str] = None
     status: Optional[TicketStatus] = None
     priority: Optional[TicketPriority] = None
     channel: Optional[TicketChannel] = None
@@ -170,6 +175,7 @@ class TicketOut(BaseModel):
     priority: TicketPriority
     channel: TicketChannel
     summary: str
+    title: Optional[str] = None
     client_id: Optional[int] = None
 
 class TicketWithClientFlat(BaseModel):
@@ -179,6 +185,7 @@ class TicketWithClientFlat(BaseModel):
     priority: TicketPriority
     channel: TicketChannel
     summary: str
+    title: Optional[str] = None
     client_id: Optional[int] = None
     client_name: Optional[str] = None
     client_email: Optional[str] = None
@@ -206,6 +213,7 @@ class TicketFormattedOut(BaseModel):
     priority: TicketPriority
     channel: TicketChannel
     summary: str
+    title: Optional[str] = None
     subject: Optional[str] = None
     body: Optional[str] = None
     message_id: Optional[str] = None

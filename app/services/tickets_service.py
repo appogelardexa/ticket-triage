@@ -111,7 +111,7 @@ def resolve_ticket_create_refs(sb, inp: TicketCreateInputV3,) -> dict:
 
 def build_ticket_insertable(data: dict) -> dict:
     allowed = {
-        "summary", "status", "priority", "channel",
+        "summary", "title", "status", "priority", "channel",
         "client_id", "assignee_id", "department_id", "category_id", "subject",
         "body", "message_id", "thread_id",
     }
