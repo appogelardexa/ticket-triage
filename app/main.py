@@ -7,6 +7,7 @@ from app.api.routes.category import router as categories_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.user_client import router as users_router
 from app.api.routes.me import router as me_router
+from app.api.routes.analytics import router as analytics_router
 
 app = FastAPI(title="Ticket Triage API", version="0.1.0")
 
@@ -29,3 +30,4 @@ app.include_router(tickets_router, prefix="/tickets")
 app.include_router(history_router, prefix="/history")
 app.include_router(departments_router, prefix="/departments")
 app.include_router(categories_router, prefix="/categories")
+app.include_router(analytics_router, prefix="")

@@ -1,0 +1,15 @@
+# Caddy v2 configuration
+
+# Note: Using an IP as a site label cannot get a public Let's Encrypt cert.
+# If you still want HTTPS, uncomment 'tls internal' for a self-signed cert.
+
+ticket-triage.duckdns.org {
+    reverse_proxy web:8000
+    encode gzip
+}
+
+ardexa-ticket-triage.duckdns.org {
+    reverse_proxy api:8000
+    encode gzip
+}
+

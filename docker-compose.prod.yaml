@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  api:
+    image: appogel13/ardexa-ticket
+    networks:
+      - shared_frontend
+    configs:
+      - source: api_env_v1
+        target: /app/.env          # your app should load this path
+        mode: 0444
+
+  # caddy:
+  #   image: caddy:2-alpine
+  #   ports: ["80:80","443:443"]
+  #   volumes:
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   networks:
+  #         - shared_frontend
+  #   configs:
+  #     - source: caddyfile_v5
+  #       target: /etc/caddy/Caddyfile
+  #       mode: 0444
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  shared_frontend:
+    external: true
+
+configs:
+  api_env_v1:
+    file: ./.env.prod
+  # caddyfile_v5:
+  #   file: ./Caddyfile
