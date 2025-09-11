@@ -8,8 +8,7 @@ ticket-triage.duckdns.org {
     encode gzip
 }
 
-ardexa-ticket-triage.duckdns.org {
-    reverse_proxy api:8000
+ticket-api.ardexa.ai {
+    reverse_proxy ardexaticket_api:8000
     encode gzip
 }
-
