@@ -749,7 +749,7 @@ def filter_tickets(
 #     return res2.data
 
 
-@router.patch(
+@router.put(
     "/{ticket_id}",
     response_model=TicketFormattedWithAttachmentsOut,
     summary="Update ticket by Ticket ID",
