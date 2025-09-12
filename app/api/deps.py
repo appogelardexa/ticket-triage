@@ -45,25 +45,42 @@ def require_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) ->
     except Exception:
         role = None
 
-    # Optional: lookup linked domain ids
+    # Optional: lookup linked domain ids and names
     staff_id = None
+    staff_name = None
     client_id = None
+    client_name = None
     try:
         sres = (
-            sb_admin.table("internal_staff").select("id").eq("user_id", user_id).single().execute()
+            sb_admin.table("internal_staff").select("id,name").eq("user_id", user_id).single().execute()
         )
         if not getattr(sres, "error", None) and getattr(sres, "data", None):
-            staff_id = sres.data.get("id") if isinstance(sres.data, dict) else None
+            if isinstance(sres.data, dict):
+                staff_id = sres.data.get("id")
+                staff_name = sres.data.get("name")
     except Exception:
         staff_id = None
+        staff_name = None
     try:
         cres = (
-            sb_admin.table("clients").select("id").eq("user_id", user_id).single().execute()
+            sb_admin.table("clients").select("id,name").eq("user_id", user_id).single().execute()
         )
         if not getattr(cres, "error", None) and getattr(cres, "data", None):
-            client_id = cres.data.get("id") if isinstance(cres.data, dict) else None
+            if isinstance(cres.data, dict):
+                client_id = cres.data.get("id")
+                client_name = cres.data.get("name")
     except Exception:
         client_id = None
+        client_name = None
+
+    # Choose a display name
+    display_name = staff_name or client_name
+    if not display_name and email:
+        try:
+            display_name = email.split("@", 1)[0].replace(".", " ").replace("_", " ")
+            display_name = display_name.title()
+        except Exception:
+            display_name = None
 
     return {
         "user_id": user_id,
@@ -71,6 +88,7 @@ def require_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) ->
         "role": role,
         "staff_id": staff_id,
         "client_id": client_id,
+        "name": display_name,
         "jwt": jwt,
     }
 
