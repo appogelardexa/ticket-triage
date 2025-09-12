@@ -315,9 +315,7 @@ class CategoryDefaultAssigneePatch(BaseModel):
 class CategoryWithDefaultAssigneesOut(CategoryOut):
     default_assignees: List[CategoryDefaultAssigneeOut] = []
 
-# ---------------------------------
-# Ticket Attachments (metadata only)
-# ---------------------------------
+
 class TicketAttachmentOut(BaseModel):
     id: int
     ticket_id: int
@@ -332,7 +330,6 @@ class TicketAttachmentOut(BaseModel):
 class TicketCreatedWithAttachmentsOut(BaseModel):
     ticket: TicketFormattedOut
     attachments: List[TicketAttachmentOut] = []
-
 
 # Variants that include attachments inline with tickets
 class TicketFormattedWithAttachmentsOut(TicketFormattedOut):
@@ -353,9 +350,6 @@ class TicketsListWithCountWithAttachments(BaseModel):
     data: List[TicketFormattedWithAttachmentsOut]
 
 
-# -----------------
-# Ticket Comments
-# -----------------
 class TicketCommentOut(BaseModel):
     id: int
     ticket_id: int  # FK to tickets.id
@@ -375,3 +369,20 @@ class TicketCommentCreate(BaseModel):
 class TicketCommentPatch(BaseModel):
     body: Optional[str] = None
     is_private: Optional[bool] = None
+
+class TicketBasicExport(BaseModel):
+    ticket_id: str
+    title: Optional[str] = None
+    description: Optional[str] = None 
+    summary: str
+    priority: TicketPriority
+    channel: TicketChannel
+    client: Optional[str] = None       
+    assignee: Optional[str] = None     
+    company: Optional[str] = None     
+    created_at: Optional[datetime] = None
+    attachments: List[TicketAttachmentOut] = []
+
+class TicketBasicExportList(BaseModel):
+    count: int
+    data: List[TicketBasicExport]

@@ -28,6 +28,8 @@ from app.models.schemas import (
     TicketCommentOut,
     TicketCommentCreate,
     TicketCommentPatch,
+    TicketBasicExport,
+    TicketBasicExportList,
 )
 from app.services.tickets_service import (
     resolve_ticket_create_refs,
@@ -375,118 +377,170 @@ def delete_ticket_comment(comment_id: int, user=Depends(require_user)):
         raise HTTPException(status_code=502, detail=str(d.error))
     return Response(status_code=204)
 
-@router.get("/paginated", response_model=TicketsPageFormattedWithAttachments, summary="Fetch a paginated list of tickets (with attachments)")
-def list_tickets(
-    limit: int = Query(10, ge=1, le=100, description="Number of tickets to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination"),
-    sort: bool = Query(False, description="True=descending (newest first), False=ascending"),
+# @router.get("/paginated", response_model=TicketsPageFormattedWithAttachments, summary="Fetch a paginated list of tickets (with attachments)")
+# def list_tickets(
+#     limit: int = Query(10, ge=1, le=100, description="Number of tickets to return"),
+#     offset: int = Query(0, ge=0, description="Offset for pagination"),
+#     sort: bool = Query(False, description="True=descending (newest first), False=ascending"),
+#     user=Depends(require_user),
+# ):
+#     """
+#     Retrieve a paginated list of tickets from the `tickets_formatted` table.
+
+#     - Results are ordered by `created_at` (ascending by default; descending if `sort=True`).
+#     - Pagination is controlled by:
+#     * `limit` — maximum number of rows per page (default 10, max 100).
+#     * `offset` — starting row for the current page.
+
+#     Response:
+#     - `count` — total number of tickets available.
+#     - `limit` — page size applied.
+#     - `offset` — current page offset.
+#     - `next_offset` — offset value for the next page, or `null` if no more results.
+#     - `data` — the ticket records returned.
+
+#     Errors:
+#     - 502 if the database query fails.
+#     """
+
+#     sb_user = get_user_supabase(user["jwt"])
+#     res = (
+#         sb_user.table("tickets_formatted")
+#           .select("*", count="exact")
+#           .order("created_at", desc=sort)
+#           .range(offset, offset + limit - 1)
+#           .execute()
+#     )
+#     if getattr(res, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res.error))
+
+#     data = res.data or []
+#     count = getattr(res, "count", None)
+#     has_more = len(data) == limit and (count is None or (offset + limit) < count)
+#     next_offset = (offset + limit) if has_more else None
+
+#     enriched = enrich_tickets_with_attachments(get_supabase(), data)
+
+#     return {
+#         "count": count,
+#         "limit": limit,
+#         "offset": offset,
+#         "next_offset": next_offset,
+#         "data": enriched,
+#     }
+
+# @router.get("/by-date", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by created_at date (with attachments)")
+# def filter_tickets_by_date(
+#     on: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD)"),
+#     start_date: Optional[str] = Query(None, description="Start date inclusive (YYYY-MM-DD)"),
+#     end_date: Optional[str] = Query(None, description="End date inclusive (YYYY-MM-DD)"),
+#     sort: bool = Query(True, description="True=newest first; False=oldest first"),
+#     limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
+#     user=Depends(require_user),
+# ):
+#     """
+#     Retrieve tickets filtered by their `created_at` timestamp.
+
+#     - Provide at least one of:
+#     * `on` — a specific calendar date (filters tickets created on that day, UTC).
+#     * `start_date` — the inclusive start date of the range.
+#     * `end_date` — the inclusive end date of the range.
+#     - If only `on` is given, results cover that single day.
+#     - If `start_date` and/or `end_date` are provided, results cover the inclusive date range.
+#     - Results are ordered by `created_at` (newest first by default; oldest first if `sort=False`).
+#     - Maximum rows are capped by `limit` (default 50, maximum 100).
+
+#     Response:
+#     - `count` — total matching records.
+#     - `limit` — applied row limit.
+#     - `data` — list of tickets.
+
+#     Errors:
+#     - 400 if no date filters are provided or if `start_date >= end_date`.
+#     - 502 if the database query fails.
+#     """
+
+#     sb = get_user_supabase(user["jwt"])
+
+#     if on is not None:
+#         start_at, end_at = build_utc_range(on=on)
+#     else:
+#         start_at, end_at = build_utc_range(start_at=start_date, end_at=end_date)
+#         if start_at >= end_at:
+#             raise HTTPException(status_code=400, detail="start_date must be before end_date")
+
+        
+#     q = sb.table("tickets_detailed").select("*", count="exact")
+#     if sort is not None:
+#         q = q.order("created_at", desc=sort)
+#     if limit is not None:
+#         q = q.limit(limit)
+
+#     q = q.gte("created_at", start_at).lt("created_at", end_at)
+#     res = q.execute()
+    
+#     if getattr(res, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res.error))
+
+#     rows = res.data or []
+#     enriched = enrich_tickets_with_attachments(get_supabase(), rows)
+#     return {
+#         "count": getattr(res, "count", None),
+#         "limit": limit,
+#         "data": enriched,
+#     }
+
+
+@router.get(
+    "/list",
+    response_model=TicketBasicExportList,
+    summary="List all tickets",
+)
+def list_all_tickets_basic(
+    sort: bool = Query(True, description="True=newest first; False=oldest first"),
     user=Depends(require_user),
 ):
     """
-    Retrieve a paginated list of tickets from the `tickets_formatted` table.
-
-    - Results are ordered by `created_at` (ascending by default; descending if `sort=True`).
-    - Pagination is controlled by:
-    * `limit` — maximum number of rows per page (default 10, max 100).
-    * `offset` — starting row for the current page.
-
-    Response:
-    - `count` — total number of tickets available.
-    - `limit` — page size applied.
-    - `offset` — current page offset.
-    - `next_offset` — offset value for the next page, or `null` if no more results.
-    - `data` — the ticket records returned.
-
-    Errors:
-    - 502 if the database query fails.
+    Return all tickets.
     """
+    sb_user = get_user_supabase(user["jwt"])  # RLS-enforced
 
-    sb_user = get_user_supabase(user["jwt"])
+    # Fetch from formatted view to get names; cap to a high limit to avoid unbounded responses.
     res = (
         sb_user.table("tickets_formatted")
           .select("*", count="exact")
           .order("created_at", desc=sort)
-          .range(offset, offset + limit - 1)
+          .limit(10000)
           .execute()
     )
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
-
-    data = res.data or []
-    count = getattr(res, "count", None)
-    has_more = len(data) == limit and (count is None or (offset + limit) < count)
-    next_offset = (offset + limit) if has_more else None
-
-    enriched = enrich_tickets_with_attachments(get_supabase(), data)
-
-    return {
-        "count": count,
-        "limit": limit,
-        "offset": offset,
-        "next_offset": next_offset,
-        "data": enriched,
-    }
-
-@router.get("/by-date", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by created_at date (with attachments)")
-def filter_tickets_by_date(
-    on: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD)"),
-    start_date: Optional[str] = Query(None, description="Start date inclusive (YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="End date inclusive (YYYY-MM-DD)"),
-    sort: bool = Query(True, description="True=newest first; False=oldest first"),
-    limit: int = Query(50, ge=1, le=100, description="Max rows to return"),
-    user=Depends(require_user),
-):
-    """
-    Retrieve tickets filtered by their `created_at` timestamp.
-
-    - Provide at least one of:
-    * `on` — a specific calendar date (filters tickets created on that day, UTC).
-    * `start_date` — the inclusive start date of the range.
-    * `end_date` — the inclusive end date of the range.
-    - If only `on` is given, results cover that single day.
-    - If `start_date` and/or `end_date` are provided, results cover the inclusive date range.
-    - Results are ordered by `created_at` (newest first by default; oldest first if `sort=False`).
-    - Maximum rows are capped by `limit` (default 50, maximum 100).
-
-    Response:
-    - `count` — total matching records.
-    - `limit` — applied row limit.
-    - `data` — list of tickets.
-
-    Errors:
-    - 400 if no date filters are provided or if `start_date >= end_date`.
-    - 502 if the database query fails.
-    """
-
-    sb = get_user_supabase(user["jwt"])
-
-    if on is not None:
-        start_at, end_at = build_utc_range(on=on)
-    else:
-        start_at, end_at = build_utc_range(start_at=start_date, end_at=end_date)
-        if start_at >= end_at:
-            raise HTTPException(status_code=400, detail="start_date must be before end_date")
-
-        
-    q = sb.table("tickets_detailed").select("*", count="exact")
-    if sort is not None:
-        q = q.order("created_at", desc=sort)
-    if limit is not None:
-        q = q.limit(limit)
-
-    q = q.gte("created_at", start_at).lt("created_at", end_at)
-    res = q.execute()
-    
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
-
     rows = res.data or []
+
+    # Enrich with attachments
     enriched = enrich_tickets_with_attachments(get_supabase(), rows)
-    return {
-        "count": getattr(res, "count", None),
-        "limit": limit,
-        "data": enriched,
-    }
+
+    # Map to the requested shape
+    out: List[dict] = []
+    for r in enriched:
+        if not isinstance(r, dict):
+            continue
+        out.append({
+            "ticket_id": r.get("ticket_id"),
+            "title": r.get("title"),
+            "description": r.get("body"),
+            "summary": r.get("summary"),
+            "priority": r.get("priority"),
+            "channel": r.get("channel"),
+            "client": r.get("client_name"),
+            "assignee": r.get("assignee_name"),
+            "company": r.get("company_name"),
+            "created_at": r.get("created_at"),
+            "attachments": r.get("attachments", []),
+        })
+
+    total = getattr(res, "count", None) or len(out)
+    return {"count": total, "data": out}
 
 
 @router.get("/by-attributes", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by status, priority, or channel (with attachments)")
