@@ -372,6 +372,7 @@ class TicketCommentPatch(BaseModel):
 
 class TicketBasicExport(BaseModel):
     ticket_id: str
+    status: str
     title: Optional[str] = None
     description: Optional[str] = None 
     summary: str

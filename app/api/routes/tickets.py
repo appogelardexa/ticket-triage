@@ -527,6 +527,7 @@ def list_all_tickets_basic(
             continue
         out.append({
             "ticket_id": r.get("ticket_id"),
+            "status": r.get("status"),
             "title": r.get("title"),
             "description": r.get("body"),
             "summary": r.get("summary"),
