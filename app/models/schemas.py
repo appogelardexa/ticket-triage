@@ -4,23 +4,23 @@ from enum import Enum
 from pydantic import BaseModel, EmailStr
 
 class TicketStatus(str, Enum):
-    new = "new"
-    open = "open"
-    in_progress = "in_progress"
-    on_hold = "on_hold"
-    resolved = "resolved"
-    closed = "closed"
-    reopened = "reopened"
+    new = "New"
+    # open = "open"
+    in_progress = "In Progress"
+    on_hold = "On Hold"
+    # resolved = "resolved"
+    closed = "Closed"
+    # reopened = "reopened"
 
 class TicketPriority(str, Enum):
-    P1 = "P1"
-    P2 = "P2"
-    P3 = "P3"
-    P4 = "P4"
-    low = "low"
-    normal = "normal"
-    high = "high"
-    urgent = "urgent"
+    # P1 = "P1"
+    # P2 = "P2"
+    # P3 = "P3"
+    # P4 = "P4"
+    low = "Low"
+    medium = "Medium"
+    high = "High"
+    urgent = "Urgent"
 
 class TicketChannel(str, Enum):
     email = "email"
@@ -80,7 +80,7 @@ class TicketCreateInputV1(BaseModel):
     summary: str
     title: Optional[str] = None
     status: TicketStatus = TicketStatus.new
-    priority: TicketPriority = TicketPriority.normal
+    priority: TicketPriority = TicketPriority.low
     channel: TicketChannel = TicketChannel.email
     client_id: Optional[int] = None
     department_id: Optional[int] = None
@@ -93,7 +93,7 @@ class TicketCreateInputV2(BaseModel):
     summary: str
     title: Optional[str] = None
     status: Optional[TicketStatus] = TicketStatus.new
-    priority: Optional[TicketPriority] = TicketPriority.P3
+    priority: Optional[TicketPriority] = TicketPriority.low
     channel: Optional[TicketChannel] = TicketChannel.email
 
     client_id: Optional[int] = None
@@ -120,7 +120,7 @@ class TicketCreateInputV3(BaseModel):
     summary: str
     title: Optional[str] = None
     status: Optional[TicketStatus] = TicketStatus.new
-    priority: Optional[TicketPriority] = TicketPriority.P3
+    priority: Optional[TicketPriority] = TicketPriority.low
     channel: Optional[TicketChannel] = TicketChannel.email
 
     client_id: Optional[int] = None
@@ -140,7 +140,7 @@ class TicketCreatePublic(BaseModel):
     summary: str
     title: Optional[str] = None
     status: Optional[TicketStatus] = TicketStatus.new
-    priority: Optional[TicketPriority] = TicketPriority.P3
+    priority: Optional[TicketPriority] = TicketPriority.low
     channel: Optional[TicketChannel] = TicketChannel.email
 
     client_name: Optional[str] = None

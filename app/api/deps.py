@@ -19,8 +19,12 @@ def require_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) ->
     jwt = credentials.credentials
     sb_admin = get_supabase()
 
-    # Validate token and fetch user via Supabase Admin
-    res = sb_admin.auth.get_user(jwt)
+    # Validate token using an ANON-key client to avoid mixing service-role
+    # credentials with a user JWT on /auth/v1/user (which can yield 403
+    # session_not_found). Use service client only for subsequent DB lookups.
+    s = get_settings()
+    sb_anon = create_client(s.SUPABASE_URL, s.SUPABASE_ANON_KEY or "")
+    res = sb_anon.auth.get_user(jwt)
     if getattr(res, "error", None) or not getattr(res, "user", None):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
