@@ -352,23 +352,27 @@ class TicketsListWithCountWithAttachments(BaseModel):
 
 class TicketCommentOut(BaseModel):
     id: int
-    ticket_id: int  # FK to tickets.id
-    internal_staff_id: int
+    ticket_id: int
+    internal_staff_id: Optional[int] = None
+    # created_by_user_id: Optional[str] = None
+    author_client_id: Optional[int] = None
+    author_type: Optional[str] = None            
+    author_staff_name: Optional[str] = None
+    author_client_name: Optional[str] = None
     body: str
-    is_private: bool = False
+    # is_private: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
 
 class TicketCommentCreate(BaseModel):
-    internal_staff_id: int
     body: str
     is_private: Optional[bool] = False
 
 
 class TicketCommentPatch(BaseModel):
     body: Optional[str] = None
-    is_private: Optional[bool] = None
+    is_private: Optional[bool] = False
 
 class TicketBasicExport(BaseModel):
     ticket_id: str

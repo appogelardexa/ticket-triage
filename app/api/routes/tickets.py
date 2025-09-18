@@ -286,7 +286,7 @@ def list_ticket_comments(
     try: 
         ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
         q = (
-            sb.table("ticket_comments")
+            sb.table("ticket_comments_enriched")
             .select("*")
             .eq("ticket_id", ticket_pk)
             .order("created_at", desc=True)
@@ -312,31 +312,54 @@ def add_ticket_comment(ticket_id: str, payload: TicketCommentCreate, user=Depend
     sb = get_user_supabase(user["jwt"])
     ticket_pk, _ = get_ticket_pk_and_public_id(sb, ticket_id)
 
-    if not payload.internal_staff_id:
-        raise HTTPException(status_code=400, detail="internal_staff_id is required")
+    # Require non-empty body
+    if not getattr(payload, "body", None) or not str(payload.body).strip():
+        raise HTTPException(status_code=400, detail="Comment body is required")
 
-    data = payload.model_dump(exclude_none=True)
-    data["ticket_id"] = ticket_pk
+    actor_staff_id = (user or {}).get("staff_id")
 
-    res = sb.table("ticket_comments").insert(data).execute()
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
+    if actor_staff_id:
+        # Staff can create public or private comments; always attribute to themselves
+        data = {
+            "ticket_id": ticket_pk,
+            "body": payload.body,
+            "is_private": bool(getattr(payload, "is_private", False) or False),
+            "internal_staff_id": actor_staff_id,
+        }
+    else:
+        # Clients can only create public comments
+        if getattr(payload, "is_private", False):
+            raise HTTPException(status_code=403, detail="Clients cannot create private comments")
+        data = {
+            "ticket_id": ticket_pk,
+            "body": payload.body,
+            "is_private": False,
+        }
 
-    row = res.data[0] if isinstance(res.data, list) and res.data else res.data
-    if not row:
-        # Fallback: fetch latest inserted for this ticket by created_at
-        sel = (
-            sb.table("ticket_comments")
-              .select("*")
-              .eq("ticket_id", ticket_pk)
-              .order("created_at", desc=True)
-              .limit(1)
-              .execute()
-        )
-        if getattr(sel, "error", None) or not getattr(sel, "data", None):
-            raise HTTPException(status_code=502, detail="Failed to fetch created comment")
-        return sel.data[0]
-    return row
+    ins = sb.table("ticket_comments").insert(data).execute()
+    if getattr(ins, "error", None):
+        raise HTTPException(status_code=502, detail=str(ins.error))
+
+    # Normalize inserted row and prefer returning from enriched view
+    new_row = ins.data[0] if isinstance(ins.data, list) and ins.data else ins.data
+    new_id = new_row.get("id") if isinstance(new_row, dict) else None
+    if new_id is not None:
+        sel = sb.table("ticket_comments_enriched").select("*").eq("id", new_id).single().execute()
+        if not getattr(sel, "error", None) and getattr(sel, "data", None):
+            return sel.data
+
+    # Fallback: latest by created_at for this ticket
+    sel2 = (
+        sb.table("ticket_comments_enriched")
+          .select("*")
+          .eq("ticket_id", ticket_pk)
+          .order("created_at", desc=True)
+          .limit(1)
+          .execute()
+    )
+    if not getattr(sel2, "error", None) and getattr(sel2, "data", None):
+        return sel2.data[0]
+    return new_row
 
 
 @router.put(
@@ -354,7 +377,7 @@ def update_ticket_comment(comment_id: int, patch: TicketCommentPatch, user=Depen
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
 
-    sel = sb.table("ticket_comments").select("*").eq("id", comment_id).single().execute()
+    sel = sb.table("ticket_comments_enriched").select("*").eq("id", comment_id).single().execute()
     if getattr(sel, "error", None) or not getattr(sel, "data", None):
         raise HTTPException(status_code=404, detail="Comment not found")
     return sel.data
@@ -375,6 +398,7 @@ def delete_ticket_comment(comment_id: int, user=Depends(require_user)):
     d = sb.table("ticket_comments").delete().eq("id", comment_id).execute()
     if getattr(d, "error", None):
         raise HTTPException(status_code=502, detail=str(d.error))
+    
     return Response(status_code=204)
 
 # @router.get("/paginated", response_model=TicketsPageFormattedWithAttachments, summary="Fetch a paginated list of tickets (with attachments)")
