@@ -353,6 +353,8 @@ class TicketsListWithCountWithAttachments(BaseModel):
 class TicketCommentOut(BaseModel):
     id: int
     ticket_id: int
+    # Public identifier for the ticket (e.g., "TCK-001132") from tickets.ticket_id
+    ticket_public_id: Optional[str] = None
     internal_staff_id: Optional[int] = None
     # created_by_user_id: Optional[str] = None
     author_client_id: Optional[int] = None
