@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from collections import Counter
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -59,6 +59,41 @@ def _norm_priority(p: object) -> str | None:
     mapping = {"low": "Low", "medium": "Medium", "high": "High", "urgent": "Urgent"}
     key = str(p)
     return mapping.get(key, mapping.get(key.lower(), key))
+
+
+def _parse_dt(value: object) -> Optional[datetime]:
+    try:
+        if value is None:
+            return None
+        s = str(value)
+        # Handle trailing 'Z' if present
+        if s.endswith("Z"):
+            s = s.replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _fmt_duration(seconds: float) -> str:
+    try:
+        if seconds is None or seconds < 0:
+            return "-"
+        secs = int(seconds)
+        days, rem = divmod(secs, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, sec = divmod(rem, 60)
+        parts: List[str] = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if sec or not parts:
+            parts.append(f"{sec}s")
+        return " ".join(parts)
+    except Exception:
+        return "-"
 
 
 @router.get("/dashboard", summary="Get dashboard KPIs and stats")
@@ -209,3 +244,182 @@ def get_admin_stats():
         "totals": totals,
         "backlog_by_department": backlog_by_dept,
     }
+
+
+@router.get("/response-times", summary="Average response/close/handling times (overall and by staff)")
+def get_response_times(
+    since_days: Optional[int] = None,
+    staff_id: Optional[int] = None,
+):
+    """
+    Computes average durations using ticket_status_history_vw:
+    - to_in_progress: New -> In Progress
+    - to_close: New -> Closed
+    - handling: In Progress -> Closed
+
+    Optional filter: since_days (lookback window based on changed_at).
+    """
+    sb = get_supabase()
+
+    q = sb.table("ticket_status_history_vw").select("ticket_id,to_status,changed_at")
+    if since_days is not None:
+        since = datetime.now(timezone.utc) - timedelta(days=int(since_days))
+        q = q.gte("changed_at", since.isoformat())
+    res = q.order("ticket_id").order("changed_at").limit(100000).execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=502, detail=str(res.error))
+
+    # Aggregate first occurrences
+    first_new: Dict[str, datetime] = {}
+    first_in_prog: Dict[str, datetime] = {}
+    first_closed: Dict[str, datetime] = {}
+
+    for r in res.data or []:
+        tid = r.get("ticket_id")
+        to_status = _norm_status(r.get("to_status"))
+        at = _parse_dt(r.get("changed_at"))
+        if not tid or not to_status or not at:
+            continue
+        if to_status == "New" and tid not in first_new:
+            first_new[tid] = at
+        elif to_status == "In Progress" and tid not in first_in_prog:
+            first_in_prog[tid] = at
+        elif to_status == "Closed" and tid not in first_closed:
+            first_closed[tid] = at
+
+    # Compute durations (overall)
+    ttip_values: List[float] = []  # New -> In Progress
+    ttr_values: List[float] = []   # New -> Closed
+    handling_values: List[float] = []  # In Progress -> Closed
+
+    for tid, created_at in first_new.items():
+        ip_at = first_in_prog.get(tid)
+        cl_at = first_closed.get(tid)
+        if ip_at and ip_at >= created_at:
+            ttip_values.append((ip_at - created_at).total_seconds())
+        if cl_at and cl_at >= created_at:
+            ttr_values.append((cl_at - created_at).total_seconds())
+        if ip_at and cl_at and cl_at >= ip_at:
+            handling_values.append((cl_at - ip_at).total_seconds())
+
+    def _avg(vals: List[float]) -> Optional[float]:
+        return (sum(vals) / len(vals)) if vals else None
+
+    avg_ttip = _avg(ttip_values)
+    avg_ttr = _avg(ttr_values)
+    avg_handling = _avg(handling_values)
+
+    overall = {
+        "counts": {
+            "tickets_with_new": len(first_new),
+            "tickets_with_in_progress": len(first_in_prog),
+            "tickets_with_closed": len(first_closed),
+        },
+        "averages_seconds": {
+            "to_in_progress": avg_ttip,
+            "to_close": avg_ttr,
+            "handling": avg_handling,
+        },
+        "averages_human": {
+            "to_in_progress": _fmt_duration(avg_ttip or -1),
+            "to_close": _fmt_duration(avg_ttr or -1),
+            "handling": _fmt_duration(avg_handling or -1),
+        },
+    }
+
+    # Build per-staff breakdown (optionally filtered by staff_id)
+    by_staff: List[Dict[str, object]] = []
+    tickets_set: set[str] = set(first_new.keys()) | set(first_in_prog.keys()) | set(first_closed.keys())
+    if tickets_set:
+        ticket_ids = list(tickets_set)
+        assignee_map: Dict[str, Dict[str, Optional[object]]] = {}
+        chunk_size = 500
+        for i in range(0, len(ticket_ids), chunk_size):
+            chunk = ticket_ids[i : i + chunk_size]
+            tres = (
+                sb.table("tickets_detailed")
+                  .select("ticket_id,assignee_id,assignee_name")
+                  .in_("ticket_id", chunk)
+                  .execute()
+            )
+            if getattr(tres, "error", None):
+                raise HTTPException(status_code=502, detail=str(tres.error))
+            for row in tres.data or []:
+                tid = row.get("ticket_id")
+                if tid is None:
+                    continue
+                assignee_map[str(tid)] = {
+                    "assignee_id": row.get("assignee_id"),
+                    "assignee_name": row.get("assignee_name"),
+                }
+
+        groups: Dict[Optional[int], Dict[str, object]] = {}
+        for tid in ticket_ids:
+            meta = assignee_map.get(tid, {})
+            sid = meta.get("assignee_id")  # Optional[int]
+            sname = meta.get("assignee_name")
+
+            # If filtering by staff_id, skip others
+            if staff_id is not None and sid != staff_id:
+                continue
+
+            if sid not in groups:
+                groups[sid] = {
+                    "staff_id": sid,
+                    "staff_name": sname or ("Unassigned" if sid is None else None),
+                    "tickets": 0,
+                    "to_in_progress_values": [],
+                    "to_close_values": [],
+                    "handling_values": [],
+                }
+
+            created_at = first_new.get(tid)
+            ip_at = first_in_prog.get(tid)
+            cl_at = first_closed.get(tid)
+
+            if created_at:
+                groups[sid]["tickets"] = int(groups[sid]["tickets"]) + 1
+            if created_at and ip_at and ip_at >= created_at:
+                groups[sid]["to_in_progress_values"].append((ip_at - created_at).total_seconds())
+            if created_at and cl_at and cl_at >= created_at:
+                groups[sid]["to_close_values"].append((cl_at - created_at).total_seconds())
+            if ip_at and cl_at and cl_at >= ip_at:
+                groups[sid]["handling_values"].append((cl_at - ip_at).total_seconds())
+
+        def _avg(vals: List[float]) -> Optional[float]:
+            return (sum(vals) / len(vals)) if vals else None
+
+        for sid, g in groups.items():
+            avg_ttip_s = _avg(g["to_in_progress_values"])  # type: ignore[index]
+            avg_ttr_s = _avg(g["to_close_values"])  # type: ignore[index]
+            avg_handling_s = _avg(g["handling_values"])  # type: ignore[index]
+
+            by_staff.append({
+                "staff_id": g["staff_id"],
+                "staff_name": g["staff_name"],
+                "tickets_considered": g["tickets"],
+                "averages_seconds": {
+                    "to_in_progress": avg_ttip_s,
+                    "to_close": avg_ttr_s,
+                    "handling": avg_handling_s,
+                },
+                "averages_human": {
+                    "to_in_progress": _fmt_duration(avg_ttip_s or -1),
+                    "to_close": _fmt_duration(avg_ttr_s or -1),
+                    "handling": _fmt_duration(avg_handling_s or -1),
+                },
+                "samples": {
+                    "to_in_progress": len(g["to_in_progress_values"]),
+                    "to_close": len(g["to_close_values"]),
+                    "handling": len(g["handling_values"]),
+                },
+            })
+
+        by_staff.sort(key=lambda r: (str(r.get("staff_name") or ""), str(r.get("staff_id") or "")))
+
+    return {
+        "since_days": since_days,
+        "overall": overall,
+        "by_staff": by_staff,
+    }
+
