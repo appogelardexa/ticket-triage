@@ -73,6 +73,83 @@ def register(body: RegisterIn):
         "client_id": (client_row or {}).get("id") if isinstance(client_row, dict) else None,
     }
 
+
+@router.post("/register-staff")
+def register_staff(body: RegisterIn):
+    """
+    Register a new user and grant staff role. Also ensures an internal_staff record
+    is linked to this user for assignment and authoring purposes.
+    """
+    sb = get_supabase()  # service-role client
+    # 1) Create auth user
+    try:
+        res = sb.auth.sign_up({"email": body.email, "password": body.password})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Registration failed: {exc}")
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=400, detail=str(res.error))
+
+    user = getattr(res, "user", None) or {}
+    user_id = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None)
+    email = getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Registration failed: missing user id")
+
+    # 2) Set staff role
+    try:
+        sb.table("user_profiles").upsert({"user_id": user_id, "role": "staff"}).execute()
+    except Exception:
+        pass
+
+    # 3) Ensure internal_staff exists and is linked
+    staff_row = None
+    # Try find by user_id (non-throwing)
+    f1 = sb.table("internal_staff").select("id").eq("user_id", user_id).limit(1).execute()
+    if not getattr(f1, "error", None) and (getattr(f1, "data", None) or []) != []:
+        rows = f1.data if isinstance(f1.data, list) else [f1.data]
+        staff_row = rows[0]
+    else:
+        # Try link by email
+        f2 = sb.table("internal_staff").select("id").eq("email", email).limit(1).execute()
+        if getattr(f2, "error", None):
+            # Fall through to insert
+            pass
+        else:
+            rows = f2.data or []
+            if rows:
+                sid = rows[0].get("id")
+                upd = sb.table("internal_staff").update({"user_id": user_id}).eq("id", sid).execute()
+                if getattr(upd, "error", None):
+                    raise HTTPException(status_code=502, detail=f"Failed to link staff user_id: {upd.error}")
+                staff_row = {"id": sid}
+
+        # If still not found/linked, insert
+        if staff_row is None:
+            display_name = body.name
+            if not display_name and email:
+                try:
+                    display_name = email.split("@", 1)[0].replace(".", " ").replace("_", " ").title()
+                except Exception:
+                    display_name = "Staff"
+            ins = sb.table("internal_staff").insert({
+                "name": display_name or "Staff",
+                "email": email,
+                "user_id": user_id,
+            }).execute()
+            if getattr(ins, "error", None):
+                raise HTTPException(status_code=502, detail=f"Failed to create staff: {ins.error}")
+            staff_row = ins.data[0] if isinstance(ins.data, list) and ins.data else ins.data
+
+    if not staff_row or not isinstance(staff_row, dict) or staff_row.get("id") is None:
+        raise HTTPException(status_code=502, detail="Failed to ensure internal_staff record for user")
+
+    return {
+        "user_id": user_id,
+        "email": email,
+        "role": "staff",
+        "staff_id": (staff_row or {}).get("id") if isinstance(staff_row, dict) else None,
+    }
+
 @router.post("/login")
 def login(body: LoginIn):
     sb = get_supabase()
