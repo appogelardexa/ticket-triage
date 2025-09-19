@@ -1,6 +1,8 @@
 from typing import Optional
+import os
+import mimetypes
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 from app.api.deps import require_user
 from app.core.config import get_supabase, get_settings
@@ -101,3 +103,74 @@ def change_my_password(password: str, user=Depends(require_user)):
         raise HTTPException(status_code=502, detail=f"Password update failed: {detail}")
     return {}
 
+
+@router.put("/client/image", response_model=ClientOut, summary="Update my profile image")
+def update_my_client_image(profile_image: UploadFile = File(...), user=Depends(require_user)):
+    sb = get_supabase()
+    s = get_settings()
+
+    current = _resolve_self_client(sb, user)
+    client_id = current.get("id")
+    if not client_id:
+        raise HTTPException(status_code=404, detail="Client not found for current user")
+
+    # Validate server config for direct Storage upload
+    if not s.SUPABASE_URL or not s.SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=500, detail="Storage upload misconfigured on server")
+
+    # Bucket can be configured; default to 'avatars'
+    bucket = os.getenv("SUPABASE_AVATARS_BUCKET") or "avatars"
+
+    # Build object path
+    try:
+        orig_name = profile_image.filename or "upload"
+        _, ext = os.path.splitext(orig_name)
+        if not ext and getattr(profile_image, "content_type", None):
+            guess = mimetypes.guess_extension(profile_image.content_type)
+            ext = guess or ""
+        name_no_spaces = str(current.get("name") or "client").replace(" ", "")
+        unique_name = f"profile-{name_no_spaces}{ext}"
+        object_path = f"clients/{client_id}/{unique_name}"
+
+        try:
+            profile_image.file.seek(0)
+        except Exception:
+            pass
+        content = profile_image.file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image upload: {exc}")
+
+    # Upload via service-role
+    url = f"{s.SUPABASE_URL}/storage/v1/object/{bucket}/{object_path}"
+    headers = {
+        "Authorization": f"Bearer {s.SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": s.SUPABASE_SERVICE_ROLE_KEY,
+        "x-upsert": "true",
+        "content-type": getattr(profile_image, "content_type", None) or "application/octet-stream",
+    }
+    try:
+        resp = httpx.put(url, content=content, headers=headers, timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to upload profile image: {e}")
+    if resp.status_code >= 400:
+        try:
+            err = resp.json()
+        except Exception:
+            err = resp.text
+        raise HTTPException(status_code=502, detail=f"Failed to upload profile image: {err}")
+
+    public_url = f"{s.SUPABASE_URL}/storage/v1/object/public/{bucket}/{object_path}"
+
+    upd = (
+        sb.table("clients")
+          .update({"profile_image_link": public_url})
+          .eq("id", client_id)
+          .execute()
+    )
+    if getattr(upd, "error", None):
+        raise HTTPException(status_code=502, detail=str(upd.error))
+
+    got = sb.table("clients").select("*").eq("id", client_id).single().execute()
+    if getattr(got, "error", None) or not getattr(got, "data", None):
+        raise HTTPException(status_code=404, detail="Client not found after image update")
+    return got.data
