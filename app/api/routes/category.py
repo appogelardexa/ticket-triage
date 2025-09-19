@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from app.core.config import get_supabase
 from app.models.schemas import (
     CategoryOut,
@@ -10,6 +10,7 @@ from app.models.schemas import (
     CategoryDefaultAssigneePatch,
     CategoryWithDefaultAssigneesOut,
 )
+from app.api.deps import require_admin
 
 router = APIRouter(tags=["categories"])
 
@@ -103,7 +104,7 @@ def get_category_by_id(category_id: int):
 
 
 @router.post("/", response_model=CategoryOut, status_code=201, summary="Create category")
-def create_category(payload: CategoryCreate):
+def create_category(payload: CategoryCreate, user=Depends(require_admin)):
     sb = get_supabase()
     res = (
         sb.table("categories")
@@ -133,7 +134,7 @@ def create_category(payload: CategoryCreate):
 
 
 @router.patch("/{category_id}", response_model=CategoryOut, summary="Update category by id")
-def update_category(category_id: int, patch: CategoryPatch):
+def update_category(category_id: int, patch: CategoryPatch, user=Depends(require_admin)):
     sb = get_supabase()
     data = patch.model_dump(exclude_none=True)
     if not data:
@@ -163,7 +164,7 @@ def update_category(category_id: int, patch: CategoryPatch):
 
 
 @router.delete("/{category_id}", status_code=204, summary="Delete category by id")
-def delete_category(category_id: int):
+def delete_category(category_id: int, user=Depends(require_admin)):
     sb = get_supabase()
 
     exists = (
@@ -209,7 +210,7 @@ def list_category_default_assignees(
     status_code=201,
     summary="Create a default assignee for a category",
 )
-def create_category_default_assignee(category_id: int, payload: CategoryDefaultAssigneeCreate):
+def create_category_default_assignee(category_id: int, payload: CategoryDefaultAssigneeCreate, user=Depends(require_admin)):
     sb = get_supabase()
     data = payload.model_dump(exclude_none=True)
     data["category_id"] = category_id
@@ -262,7 +263,7 @@ def create_category_default_assignee(category_id: int, payload: CategoryDefaultA
     response_model=CategoryDefaultAssigneeOut,
     summary="Update a default assignee mapping",
 )
-def update_category_default_assignee(category_id: int, staff_id: int, patch: CategoryDefaultAssigneePatch):
+def update_category_default_assignee(category_id: int, staff_id: int, patch: CategoryDefaultAssigneePatch, user=Depends(require_admin)):
     sb = get_supabase()
     data = patch.model_dump(exclude_none=True)
     if not data:
@@ -298,7 +299,7 @@ def update_category_default_assignee(category_id: int, staff_id: int, patch: Cat
     status_code=204,
     summary="Delete a default assignee mapping",
 )
-def delete_category_default_assignee(category_id: int, staff_id: int):
+def delete_category_default_assignee(category_id: int, staff_id: int, user=Depends(require_admin)):
     sb = get_supabase()
 
     exists = (

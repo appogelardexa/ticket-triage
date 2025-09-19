@@ -1,11 +1,13 @@
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from app.core.config import get_supabase
 from app.models.schemas import (
     DepartmentOut,
     DepartmentCreate,
     DepartmentPatch,
 )
+
+from app.api.deps import require_admin
 
 router = APIRouter(tags=["departments"])
 
@@ -43,7 +45,7 @@ def get_department_by_id(department_id: int):
 
 
 @router.post("/", response_model=DepartmentOut, status_code=201, summary="Create department")
-def create_department(payload: DepartmentCreate):
+def create_department(payload: DepartmentCreate, user=Depends(require_admin)):
     sb = get_supabase()
     res = (
         sb.table("departments")
@@ -72,7 +74,7 @@ def create_department(payload: DepartmentCreate):
 
 
 @router.patch("/{department_id}", response_model=DepartmentOut, summary="Update department by id")
-def update_department(department_id: int, patch: DepartmentPatch):
+def update_department(department_id: int, patch: DepartmentPatch, user=Depends(require_admin)):
     sb = get_supabase()
     data = patch.model_dump(exclude_none=True)
     if not data:
@@ -102,7 +104,7 @@ def update_department(department_id: int, patch: DepartmentPatch):
 
 
 @router.delete("/{department_id}", status_code=204, summary="Delete department by id")
-def delete_department(department_id: int):
+def delete_department(department_id: int, user=Depends(require_admin)):
     sb = get_supabase()
 
     exists = (
