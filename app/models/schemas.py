@@ -215,7 +215,7 @@ class TicketFormattedOut(BaseModel):
     summary: str
     title: Optional[str] = None
     subject: Optional[str] = None
-    body: Optional[str] = None
+    description: Optional[str] = None
     message_id: Optional[str] = None
     thread_id: Optional[str] = None
     client_name: Optional[str] = None

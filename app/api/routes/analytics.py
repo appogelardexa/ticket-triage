@@ -39,6 +39,28 @@ def _count_since(sb, table: str, ts_col: str, since: datetime, filters: Dict[str
     return int(getattr(res, "count", 0) or 0)
 
 
+# Normalization helpers used by multiple endpoints
+def _norm_status(s: object) -> str | None:
+    if s is None:
+        return None
+    mapping = {
+        "new": "New",
+        "in progress": "In Progress",
+        "on hold": "On Hold",
+        "closed": "Closed",
+    }
+    key = str(s)
+    return mapping.get(key, mapping.get(key.lower(), key))
+
+
+def _norm_priority(p: object) -> str | None:
+    if p is None:
+        return None
+    mapping = {"low": "Low", "medium": "Medium", "high": "High", "urgent": "Urgent"}
+    key = str(p)
+    return mapping.get(key, mapping.get(key.lower(), key))
+
+
 @router.get("/dashboard", summary="Get dashboard KPIs and stats")
 def get_dashboard():
     sb = get_supabase()
@@ -46,7 +68,8 @@ def get_dashboard():
     now = datetime.now(timezone.utc)
     since_7d = now - timedelta(days=7)
 
-    open_statuses = ["new", "open", "in_progress", "on_hold"]
+    # Updated to match current TicketStatus values
+    open_statuses = ["New", "In Progress", "On Hold"]
 
     total_tickets = _count_exact(sb, "tickets")
     open_tickets = _count_exact(sb, "tickets", {"status": open_statuses})
@@ -68,8 +91,17 @@ def get_dashboard():
     if getattr(t_res, "error", None):
         raise HTTPException(status_code=502, detail=str(t_res.error))
     rows = t_res.data or []
-    dist_status = dict(Counter([r.get("status") for r in rows if r.get("status") is not None]))
-    dist_priority = dict(Counter([r.get("priority") for r in rows if r.get("priority") is not None]))
+
+    # Normalize values to expected casing and seed missing buckets
+    dist_status_raw = Counter([_norm_status(r.get("status")) for r in rows if r.get("status") is not None])
+    dist_priority_raw = Counter([_norm_priority(r.get("priority")) for r in rows if r.get("priority") is not None])
+
+    # Seed all known buckets so missing ones appear with 0
+    status_buckets = ["New", "In Progress", "On Hold", "Closed"]
+    priority_buckets = ["Low", "Medium", "High", "Urgent"]
+
+    dist_status = {b: int(dist_status_raw.get(b, 0)) for b in status_buckets}
+    dist_priority = {b: int(dist_priority_raw.get(b, 0)) for b in priority_buckets}
     dist_category = dict(Counter([r.get("category_name") or "Uncategorized" for r in rows]))
 
     return {
@@ -103,8 +135,14 @@ def get_charts():
     def as_series(counter: Dict[str, int]) -> List[Dict[str, object]]:
         return [{"label": k, "value": int(v)} for k, v in counter.items()]
 
-    by_status = dict(Counter([r.get("status") for r in rows if r.get("status") is not None]))
-    by_priority = dict(Counter([r.get("priority") for r in rows if r.get("priority") is not None]))
+    by_status_raw = Counter([_norm_status(r.get("status")) for r in rows if r.get("status") is not None])
+    by_priority_raw = Counter([_norm_priority(r.get("priority")) for r in rows if r.get("priority") is not None])
+
+    status_buckets = ["New", "In Progress", "On Hold", "Closed"]
+    priority_buckets = ["Low", "Medium", "High", "Urgent"]
+
+    by_status = {b: int(by_status_raw.get(b, 0)) for b in status_buckets}
+    by_priority = {b: int(by_priority_raw.get(b, 0)) for b in priority_buckets}
     by_category = dict(Counter([r.get("category_name") or "Uncategorized" for r in rows]))
 
     return {
@@ -120,16 +158,24 @@ def get_user_stats(staff_id: int):
     now = datetime.now(timezone.utc)
     since_30d = now - timedelta(days=30)
 
-    open_statuses = ["new", "open", "in_progress", "on_hold"]
+    # Updated to match current TicketStatus values
+    open_statuses = ["New", "In Progress", "On Hold"]
 
     assigned_total = _count_exact(sb, "tickets", {"assignee_id": staff_id})
-    assigned_open = _count_exact(sb, "tickets", {"assignee_id": staff_id, "status": open_statuses})
-    assigned_closed = _count_exact(sb, "tickets", {"assignee_id": staff_id, "status": ["resolved", "closed"]})
+    # Per-status open breakdown
+    assigned_open_by_status = {
+        "New": _count_exact(sb, "tickets", {"assignee_id": staff_id, "status": "New"}),
+        "In Progress": _count_exact(sb, "tickets", {"assignee_id": staff_id, "status": "In Progress"}),
+        "On Hold": _count_exact(sb, "tickets", {"assignee_id": staff_id, "status": "On Hold"}),
+    }
+    assigned_open = sum(assigned_open_by_status.values())
+    assigned_closed = _count_exact(sb, "tickets", {"assignee_id": staff_id, "status": ["Closed"]})
     comments_last_30d = _count_since(sb, "ticket_comments", "created_at", since_30d, {"internal_staff_id": staff_id})
 
     return {
         "assigned_total": assigned_total,
         "assigned_open": assigned_open,
+        "assigned_open_by_status": assigned_open_by_status,
         "assigned_closed": assigned_closed,
         "comments_last_30d": comments_last_30d,
     }
@@ -152,7 +198,7 @@ def get_admin_stats():
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
     rows = res.data or []
-    open_statuses = {"new", "open", "in_progress", "on_hold"}
+    open_statuses = {"New", "In Progress", "On Hold"}
     backlog_by_dept: Dict[str, int] = {}
     for r in rows:
         if r.get("status") in open_statuses:
@@ -163,4 +209,3 @@ def get_admin_stats():
         "totals": totals,
         "backlog_by_department": backlog_by_dept,
     }
-
