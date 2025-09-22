@@ -337,3 +337,54 @@ def enrich_tickets_with_attachments(sb, tickets: List[dict]) -> List[dict]:
         enriched.append({**row, "attachments": attachments_map.get(tid, [])})
 
     return enriched
+
+
+# -----------------
+# Presentation helpers (format for UI)
+# -----------------
+
+def map_status_for_ui(value: Optional[str]) -> Optional[str]:
+    """Normalize API/DB status values to UI-expected tokens.
+
+    Mappings (case/spacing/hyphen insensitive):
+    - open -> new
+    - in-progress/in progress/inprogress -> in-process
+    - on-hold/on hold/onhold -> on-hold
+    - new, closed pass-through
+    Unknown values are returned as-is.
+    """
+    if value is None:
+        return None
+    key = str(value).strip().lower().replace(" ", "-").replace("_", "-")
+    key = key.replace("--", "-")
+    if key in {"open"}:
+        return "new"
+    if key in {"in-progress", "inprogress", "in-Progress".lower()}:
+        return "in-process"
+    if key in {"on-hold", "onhold", "on-hold"}:
+        return "on-hold"
+    if key in {"new", "closed"}:
+        return key
+    return str(value)
+
+
+def map_priority_for_ui(value: Optional[str]) -> Optional[str]:
+    """Normalize priority to urgent/high/medium/low.
+    Accepts P1..P4 and existing words with any casing.
+    Unknown values are returned lowercased.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip()
+    key = raw.lower()
+    mapping = {
+        "p1": "urgent",
+        "p2": "high",
+        "p3": "medium",
+        "p4": "low",
+        "urgent": "urgent",
+        "high": "high",
+        "medium": "medium",
+        "low": "low",
+    }
+    return mapping.get(key, key)

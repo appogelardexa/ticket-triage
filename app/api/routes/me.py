@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
 from app.api.deps import require_user
 from app.core.config import get_supabase, get_settings
-from app.models.schemas import ClientOut, ClientPatch
+from app.models.schemas import ClientOut, ClientPatch, UserPolishedOut
 
 
 router = APIRouter(prefix="/api/me", tags=["me"])
@@ -71,18 +71,49 @@ def _resolve_self_staff(sb, user: dict) -> dict:
     raise HTTPException(status_code=404, detail="Staff profile not found for current user")
 
 
-@router.get("/user", response_model=ClientOut, summary="Get my user profile")
+@router.get("/user", response_model=UserPolishedOut, summary="Get my user profile (polished)")
 def get_my_client(user=Depends(require_user)):
     sb = get_supabase()
-    row = _resolve_self_client(sb, user)
-    return row
+    r = _resolve_self_client(sb, user)
+    return {
+        "id": r.get("id"),
+        "email": r.get("email"),
+        "name": r.get("name"),
+        "role": "user",
+        "staff_id": None,
+        "is_active": None,
+        "created_at": r.get("created_at"),
+        "updated_at": r.get("updated_at"),
+        "profile": {
+            "avatar": r.get("profile_image_link"),
+            "department": None,
+        },
+    }
 
 
-@router.get("/staff", summary="Get my staff profile")
+@router.get("/staff", response_model=UserPolishedOut, summary="Get my staff profile (polished)")
 def get_my_staff(user=Depends(require_user)):
     sb = get_supabase()
-    row = _resolve_self_staff(sb, user)
-    return row
+    r = _resolve_self_staff(sb, user)
+    dept = None
+    if isinstance(r, dict) and r.get("department_id") is not None:
+        d = sb.table("departments").select("id,name").eq("id", r.get("department_id")).single().execute()
+        if not getattr(d, "error", None) and getattr(d, "data", None):
+            dept = d.data
+    return {
+        "id": r.get("id"),
+        "email": r.get("email"),
+        "name": r.get("name"),
+        "role": "staff",
+        "staff_id": r.get("id"),
+        "is_active": (r.get("status") == "active"),
+        "created_at": r.get("created_at"),
+        "updated_at": r.get("updated_at"),
+        "profile": {
+            "avatar": r.get("profile_image_link"),
+            "department": ({"id": dept.get("id"), "name": dept.get("name")} if isinstance(dept, dict) else None),
+        },
+    }
 
 
 @router.patch("/user", response_model=ClientOut, summary="Update my user profile (name and/or image)")

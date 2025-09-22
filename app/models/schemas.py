@@ -393,3 +393,99 @@ class TicketBasicExport(BaseModel):
 class TicketBasicExportList(BaseModel):
     count: int
     data: List[TicketBasicExport]
+
+
+# -----------------
+# Rich Ticket Response (nested)
+# -----------------
+
+class CompanyBrief(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+class ClientBrief(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    company: Optional[CompanyBrief] = None
+
+class DepartmentBrief(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+class StaffBrief(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    department: Optional[DepartmentBrief] = None
+
+class CategoryBrief(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+class AttachmentPublicOut(BaseModel):
+    id: int
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    file_size: Optional[int] = None
+    file_url: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+class TicketRichOut(BaseModel):
+    id: str  # public ticket_id (e.g., "TCK-000001")
+    status: str  # allow existing values (e.g., "open", "In Progress")
+    priority: str  # allow existing values (e.g., "high", "High")
+    title: Optional[str] = None
+    description: Optional[str] = None
+    summary: str
+    channel: TicketChannel
+    client: Optional[ClientBrief] = None
+    assignee: Optional[StaffBrief] = None
+    category: Optional[CategoryBrief] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    attachments: List[AttachmentPublicOut] = []
+
+class TicketsRichList(BaseModel):
+    count: int
+    data: List[TicketRichOut]
+
+
+# -----------------
+# Polished Comments
+# -----------------
+
+class CommentAuthorOut(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None  # e.g., "staff" or "client"
+
+class TicketCommentPolishedOut(BaseModel):
+    id: int
+    ticket_id: Optional[str] = None
+    content: str
+    author: Optional[CommentAuthorOut] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    attachments: List[AttachmentPublicOut] = []
+
+
+# -----------------
+# Users (polished)
+# -----------------
+
+class UserProfileOut(BaseModel):
+    avatar: Optional[str] = None
+    department: Optional[DepartmentBrief] = None
+
+class UserPolishedOut(BaseModel):
+    id: int
+    email: Optional[str] = None
+    name: Optional[str] = None
+    role: str  # "client" or "staff"
+    staff_id: Optional[int] = None
+    is_active: Optional[bool] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    profile: Optional[UserProfileOut] = None

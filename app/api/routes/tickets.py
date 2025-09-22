@@ -28,8 +28,11 @@ from app.models.schemas import (
     TicketCommentOut,
     TicketCommentCreate,
     TicketCommentPatch,
+    TicketCommentPolishedOut,
     TicketBasicExport,
     TicketBasicExportList,
+    TicketRichOut,
+    TicketsRichList,
 )
 from app.services.tickets_service import (
     resolve_ticket_create_refs,
@@ -38,6 +41,8 @@ from app.services.tickets_service import (
     upload_attachments_for_ticket,
     get_ticket_pk_and_public_id,
     enrich_tickets_with_attachments,
+    map_status_for_ui,
+    map_priority_for_ui,
 )
 
 
@@ -272,8 +277,8 @@ def replace_ticket_attachment(ticket_id: str, attachment_id: int, file: UploadFi
 
 @router.get(
     "/{ticket_id}/comments",
-    response_model=List[TicketCommentOut],
-    summary="List comments for a ticket",
+    response_model=List[TicketCommentPolishedOut],
+    summary="List comments for a ticket (polished)",
 )
 def list_ticket_comments(
     ticket_id: str,
@@ -297,7 +302,88 @@ def list_ticket_comments(
         res = q.execute()
         if getattr(res, "error", None):
             raise HTTPException(status_code=502, detail=str(res.error))
-        return res.data or []
+
+        rows = res.data or []
+
+        # Bulk fetch emails for authors when missing on the enriched view
+        staff_ids = sorted({
+            r.get("internal_staff_id")
+            for r in rows
+            if isinstance(r, dict) and r.get("author_type") == "staff" and r.get("internal_staff_id") is not None
+        })
+        client_ids = sorted({
+            r.get("author_client_id")
+            for r in rows
+            if isinstance(r, dict) and r.get("author_type") == "client" and r.get("author_client_id") is not None
+        })
+
+        staff_email_map = {}
+        client_email_map = {}
+        if staff_ids:
+            try:
+                sres = sb.table("internal_staff").select("id,email").in_("id", staff_ids).execute()
+                if getattr(sres, "error", None):
+                    raise HTTPException(status_code=502, detail=str(sres.error))
+                for s in sres.data or []:
+                    if isinstance(s, dict) and s.get("id") is not None:
+                        staff_email_map[s.get("id")] = s.get("email")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+        if client_ids:
+            try:
+                cres = sb.table("clients").select("id,email").in_("id", client_ids).execute()
+                if getattr(cres, "error", None):
+                    raise HTTPException(status_code=502, detail=str(cres.error))
+                for c in cres.data or []:
+                    if isinstance(c, dict) and c.get("id") is not None:
+                        client_email_map[c.get("id")] = c.get("email")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
+        out: List[dict] = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            role = r.get("author_type")
+            if role == "staff":
+                email = r.get("author_staff_email") or staff_email_map.get(r.get("internal_staff_id"))
+                author = {
+                    "id": r.get("internal_staff_id"),
+                    "name": r.get("author_staff_name"),
+                    "email": email,
+                    "role": "staff",
+                }
+            elif role == "client":
+                email = r.get("author_client_email") or client_email_map.get(r.get("author_client_id"))
+                author = {
+                    "id": r.get("author_client_id"),
+                    "name": r.get("author_client_name"),
+                    "email": email,
+                    "role": "client",
+                }
+            else:
+                author = {
+                    "id": None,
+                    "name": r.get("author_staff_name") or r.get("author_client_name"),
+                    "email": r.get("author_staff_email") or r.get("author_client_email"),
+                    "role": role,
+                }
+
+            out.append({
+                "id": r.get("id"),
+                "ticket_id": r.get("ticket_public_id") or ticket_id,
+                "content": r.get("body"),
+                "author": author,
+                "created_at": r.get("created_at"),
+                "updated_at": r.get("updated_at"),
+                "attachments": [],
+            })
+
+        return out
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Upstream error while fetching comments") from exc
 
@@ -517,21 +603,21 @@ def delete_ticket_comment(comment_id: int, user=Depends(require_user)):
 
 @router.get(
     "/list",
-    response_model=TicketBasicExportList,
-    summary="List all tickets",
+    response_model=TicketsRichList,
+    summary="List all tickets (nested shape)",
 )
 def list_all_tickets_basic(
     sort: bool = Query(True, description="True=newest first; False=oldest first"),
     user=Depends(require_user),
 ):
     """
-    Return all tickets.
+    Return all tickets in the nested response shape with attachments.
     """
     sb_user = get_user_supabase(user["jwt"])  # RLS-enforced
 
-    # Fetch from formatted view to get names; cap to a high limit to avoid unbounded responses.
+    # Use detailed view to include related IDs and names
     res = (
-        sb_user.table("tickets_formatted")
+        sb_user.table("tickets_detailed")
           .select("*", count="exact")
           .order("created_at", desc=sort)
           .limit(10000)
@@ -544,24 +630,58 @@ def list_all_tickets_basic(
     # Enrich with attachments
     enriched = enrich_tickets_with_attachments(get_supabase(), rows)
 
-    # Map to the requested shape
+    # Map to nested output
     out: List[dict] = []
     for r in enriched:
         if not isinstance(r, dict):
             continue
+        attachments = []
+        for a in r.get("attachments", []) or []:
+            if not isinstance(a, dict):
+                continue
+            attachments.append({
+                "id": a.get("id"),
+                "filename": a.get("filename"),
+                "content_type": a.get("mime_type"),
+                "file_size": a.get("size_bytes"),
+                "file_url": a.get("file_url"),
+                "created_at": a.get("created_at"),
+            })
+
         out.append({
-            "ticket_id": r.get("ticket_id"),
-            "status": r.get("status"),
-            "title": r.get("title"),
+            "id": r.get("ticket_id"),
+            "status": map_status_for_ui(r.get("status")),
+            "priority": map_priority_for_ui(r.get("priority")),
+            # Title is not guaranteed; fall back to subject
+            "title": r.get("title") or r.get("subject"),
             "description": r.get("body"),
             "summary": r.get("summary"),
-            "priority": r.get("priority"),
             "channel": r.get("channel"),
-            "client": r.get("client_name"),
-            "assignee": r.get("assignee_name"),
-            "company": r.get("company_name"),
+            "client": {
+                "id": r.get("client_id"),
+                "name": r.get("client_name"),
+                "email": r.get("client_email"),
+                "company": {
+                    "id": r.get("company_id"),
+                    "name": r.get("company_name"),
+                } if (r.get("company_id") is not None or r.get("company_name") is not None) else None,
+            } if (r.get("client_id") is not None or r.get("client_name") is not None or r.get("client_email") is not None) else None,
+            "assignee": {
+                "id": r.get("assignee_id"),
+                "name": r.get("assignee_name"),
+                "email": r.get("assignee_email"),
+                "department": {
+                    "id": r.get("department_id"),
+                    "name": r.get("department_name"),
+                } if (r.get("department_id") is not None or r.get("department_name") is not None) else None,
+            } if (r.get("assignee_id") is not None or r.get("assignee_name") is not None or r.get("assignee_email") is not None) else None,
+            "category": {
+                "id": r.get("category_id"),
+                "name": r.get("category_name"),
+            } if (r.get("category_id") is not None or r.get("category_name") is not None) else None,
             "created_at": r.get("created_at"),
-            "attachments": r.get("attachments", []),
+            "updated_at": r.get("updated_at"),
+            "attachments": attachments,
         })
 
     total = getattr(res, "count", None) or len(out)
@@ -641,12 +761,16 @@ def filter_tickets_by_attributes(
     }
 
 
-@router.get("/{ticket_id}", response_model=TicketFormattedWithAttachmentsOut, summary="Get ticket by ticket_id (with attachments)")
+@router.get(
+    "/{ticket_id}",
+    response_model=TicketRichOut,
+    summary="Get ticket by ticket_id (polished nested shape)",
+)
 def get_ticket_by_ticket_id(ticket_id: str, user=Depends(require_user)):
     sb = get_user_supabase(user["jwt"])  # RLS-enforced
     try:
         res = (
-            sb.table("tickets_formatted")
+            sb.table("tickets_detailed")
               .select("*")
               .eq("ticket_id", ticket_id)
               .limit(1)
@@ -655,7 +779,6 @@ def get_ticket_by_ticket_id(ticket_id: str, user=Depends(require_user)):
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Upstream error while fetching ticket") from exc
 
-    # Normalize result: Supabase may return a list or dict depending on driver
     row = None
     if isinstance(getattr(res, "data", None), list):
         data_list = res.data or []
@@ -667,8 +790,56 @@ def get_ticket_by_ticket_id(ticket_id: str, user=Depends(require_user)):
     if not isinstance(row, dict):
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    enriched = enrich_tickets_with_attachments(get_supabase(), [row])
-    return enriched[0] if enriched else row
+    enriched_list = enrich_tickets_with_attachments(get_supabase(), [row])
+    r = enriched_list[0] if enriched_list else row
+
+    attachments = []
+    for a in r.get("attachments", []) or []:
+        if not isinstance(a, dict):
+            continue
+        attachments.append({
+            "id": a.get("id"),
+            "filename": a.get("filename"),
+            "content_type": a.get("mime_type"),
+            "file_size": a.get("size_bytes"),
+            "file_url": a.get("file_url"),
+            "created_at": a.get("created_at"),
+        })
+
+    return {
+        "id": r.get("ticket_id"),
+        "status": map_status_for_ui(r.get("status")),
+        "priority": map_priority_for_ui(r.get("priority")),
+        "title": r.get("title") or r.get("subject"),
+        "description": r.get("body"),
+        "summary": r.get("summary"),
+        "channel": r.get("channel"),
+        "client": {
+            "id": r.get("client_id"),
+            "name": r.get("client_name"),
+            "email": r.get("client_email"),
+            "company": {
+                "id": r.get("company_id"),
+                "name": r.get("company_name"),
+            } if (r.get("company_id") is not None or r.get("company_name") is not None) else None,
+        } if (r.get("client_id") is not None or r.get("client_name") is not None or r.get("client_email") is not None) else None,
+        "assignee": {
+            "id": r.get("assignee_id"),
+            "name": r.get("assignee_name"),
+            "email": r.get("assignee_email"),
+            "department": {
+                "id": r.get("department_id"),
+                "name": r.get("department_name"),
+            } if (r.get("department_id") is not None or r.get("department_name") is not None) else None,
+        } if (r.get("assignee_id") is not None or r.get("assignee_name") is not None or r.get("assignee_email") is not None) else None,
+        "category": {
+            "id": r.get("category_id"),
+            "name": r.get("category_name"),
+        } if (r.get("category_id") is not None or r.get("category_name") is not None) else None,
+        "created_at": r.get("created_at"),
+        "updated_at": r.get("updated_at"),
+        "attachments": attachments,
+    }
 
 
 @router.get("/", response_model=TicketsListWithCountWithAttachments, summary="Filter tickets by IDs (with attachments)")

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import require_admin
 from app.core.config import get_supabase
-from app.models.schemas import ClientOut
+from app.models.schemas import ClientOut, UserPolishedOut, DepartmentBrief, UserProfileOut
 
 # Reuse selected client handlers
 from app.api.routes.clients import (
@@ -16,34 +16,99 @@ from app.api.routes.clients import (
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(require_admin)])
 
 
-@router.get("/", summary="List users (clients)")
+@router.get("/", response_model=list[UserPolishedOut], summary="List users")
 def list_users(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
-    return _list_clients(limit=limit, offset=offset)
+    rows = _list_clients(limit=limit, offset=offset) or []
+    out: list[dict] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        out.append({
+            "id": r.get("id"),
+            "email": r.get("email"),
+            "name": r.get("name"),
+            "role": "user",
+            "staff_id": None,
+            "is_active": None,
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
+            "profile": {
+                "avatar": r.get("profile_image_link"),
+                "department": None,
+            },
+        })
+    return out
 
 
 # Define staff routes BEFORE parameterized user routes to avoid collisions
-@router.get("/staff", summary="List staff users")
+@router.get("/staff", response_model=list[UserPolishedOut], summary="List staff")
 def list_staff(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     sb = get_supabase()
-    res = (
-        sb.table("internal_staff")
-          .select("*")
-          .order("id")
-          .range(offset, offset + limit - 1)
-          .execute()
-    )
+    res = (sb.table("internal_staff").select("*").order("id").range(offset, offset + limit - 1).execute())
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
-    return res.data or []
+    rows = res.data or []
+
+    # Load department names
+    dept_ids = sorted({r.get("department_id") for r in rows if isinstance(r, dict) and r.get("department_id") is not None})
+    dept_map: dict[int, dict] = {}
+    if dept_ids:
+        dres = sb.table("departments").select("id,name").in_("id", dept_ids).execute()
+        if getattr(dres, "error", None):
+            raise HTTPException(status_code=502, detail=str(dres.error))
+        for d in dres.data or []:
+            if isinstance(d, dict) and d.get("id") is not None:
+                dept_map[d.get("id")] = d
+
+    out: list[dict] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        did = r.get("department_id")
+        dept = dept_map.get(did)
+        out.append({
+            "id": r.get("id"),
+            "email": r.get("email"),
+            "name": r.get("name"),
+            "role": "staff",
+            "staff_id": r.get("id"),
+            "is_active": (r.get("status") == "active"),
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
+            "profile": {
+                "avatar": None,
+                "department": ({"id": dept.get("id"), "name": dept.get("name")} if isinstance(dept, dict) else None),
+            },
+        })
+    return out
 
 
-@router.get("/staff/{staff_id}", summary="Get staff by id")
+@router.get("/staff/{staff_id}", response_model=UserPolishedOut, summary="Get staff by id")
 def get_staff(staff_id: int):
     sb = get_supabase()
     res = sb.table("internal_staff").select("*").eq("id", staff_id).single().execute()
     if getattr(res, "error", None) or not getattr(res, "data", None):
         raise HTTPException(status_code=404, detail="Staff not found")
-    return res.data
+    r = res.data
+    dept = None
+    if isinstance(r, dict) and r.get("department_id") is not None:
+        d = sb.table("departments").select("id,name").eq("id", r.get("department_id")).single().execute()
+        if not getattr(d, "error", None) and getattr(d, "data", None):
+            dept = d.data
+    return {
+        "id": r.get("id"),
+        "email": r.get("email"),
+        "name": r.get("name"),
+        "role": "staff",
+        "staff_id": r.get("id"),
+        "is_active": (r.get("status") == "active"),
+        "created_at": r.get("created_at"),
+        "updated_at": r.get("updated_at"),
+        "profile": {
+            "avatar": None,
+            "department": ({"id": dept.get("id"), "name": dept.get("name")} if isinstance(dept, dict) else None),
+        },
+    }
 
 
 @router.put("/staff/{staff_id}/deactivate", summary="Deactivate staff by id")
@@ -83,11 +148,25 @@ def delete_staff(staff_id: int):
     return {}
 
 
-@router.get("/{user_id}", response_model=ClientOut, summary="Get user (client) by id")
+@router.get("/{user_id}", response_model=UserPolishedOut, summary="Get user by id")
 def get_user(user_id: int):
-    return _get_client_by_id(user_id)
+    r = _get_client_by_id(user_id)
+    return {
+        "id": r.get("id"),
+        "email": r.get("email"),
+        "name": r.get("name"),
+        "role": "user",
+        "staff_id": None,
+        "is_active": None,
+        "created_at": r.get("created_at"),
+        "updated_at": r.get("updated_at"),
+        "profile": {
+            "avatar": r.get("profile_image_link"),
+            "department": None,
+        },
+    }
 
 
-@router.delete("/{user_id}", status_code=204, summary="Delete user (client) by id")
+@router.delete("/{user_id}", status_code=204, summary="Delete user by id")
 def delete_user(user_id: int):
     return _delete_client(user_id)
