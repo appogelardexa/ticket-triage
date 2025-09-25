@@ -257,13 +257,19 @@ class DepartmentOut(BaseModel):
 
 class DepartmentCreate(BaseModel):
     name: str
-    google_channel: Optional[str] = None
-    default_assignee_id: Optional[int] = None
+    # google_channel: Optional[str] = None
+    # default_assignee_id: Optional[int] = None
     
 class DepartmentPatch(BaseModel):
     name: Optional[str] = None
     google_channel: Optional[str] = None
     default_assignee_id: Optional[int] = None
+
+# Departments (public list view)
+class DepartmentListOut(BaseModel):
+    id: int
+    name: str
+    google_channel: Optional[str] = None
 
 # Categories
 class CategoryOut(BaseModel):
@@ -489,3 +495,11 @@ class UserPolishedOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     profile: Optional[UserProfileOut] = None
+
+# Categories with polished assignees
+class CategoryWithPolishedAssigneesOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    department_id: int
+    default_assignees: List[UserPolishedOut] = []

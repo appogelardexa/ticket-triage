@@ -16,7 +16,7 @@ from app.api.routes.clients import (
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(require_admin)])
 
 
-@router.get("/", response_model=list[UserPolishedOut], summary="List users")
+@router.get("/", response_model=list[UserPolishedOut], response_model_exclude_none=True, summary="List users")
 def list_users(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     rows = _list_clients(limit=limit, offset=offset) or []
     out: list[dict] = []
@@ -41,7 +41,7 @@ def list_users(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0
 
 
 # Define staff routes BEFORE parameterized user routes to avoid collisions
-@router.get("/staff", response_model=list[UserPolishedOut], summary="List staff")
+@router.get("/staff", response_model=list[UserPolishedOut], response_model_exclude_none=True, summary="List staff")
 def list_staff(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     sb = get_supabase()
     res = (sb.table("internal_staff").select("*").order("id").range(offset, offset + limit - 1).execute())
@@ -74,7 +74,7 @@ def list_staff(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0
             "staff_id": r.get("id"),
             "is_active": (r.get("status") == "active"),
             "created_at": r.get("created_at"),
-            "updated_at": r.get("updated_at"),
+            # "updated_at": r.get("updated_at"),
             "profile": {
                 "avatar": None,
                 "department": ({"id": dept.get("id"), "name": dept.get("name")} if isinstance(dept, dict) else None),

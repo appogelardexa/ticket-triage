@@ -8,45 +8,42 @@ from app.models.schemas import (
     CategoryDefaultAssigneeOut,
     CategoryDefaultAssigneeCreate,
     CategoryDefaultAssigneePatch,
-    CategoryWithDefaultAssigneesOut,
+    CategoryWithPolishedAssigneesOut,
 )
 from app.api.deps import require_admin
 
 router = APIRouter(tags=["categories"])
 
 
-@router.get("/", summary="List categories")
+# @router.get("/", summary="List categories")
+# def list_categories(
+#     limit: int = Query(50, ge=1, le=100),
+#     offset: int = Query(0, ge=0),
+#     department_id: int | None = Query(None, description="Filter by department_id"),
+# ):
+#     sb = get_supabase()
+#     q = sb.table("categories").select("*")
+#     if department_id is not None:
+#         q = q.eq("department_id", department_id)
+#     res = q.order("id").range(offset, offset + limit - 1).execute()
+#     if getattr(res, "error", None):
+#         raise HTTPException(status_code=502, detail=str(res.error))
+#     return res.data or []
+
+@router.get(
+    "/",
+    response_model=List[CategoryWithPolishedAssigneesOut], response_model_exclude_none=True,
+    summary="List categories",
+)
 def list_categories(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    department_id: int | None = Query(None, description="Filter by department_id"),
-):
-    sb = get_supabase()
-    q = sb.table("categories").select("*")
-    if department_id is not None:
-        q = q.eq("department_id", department_id)
-    res = q.order("id").range(offset, offset + limit - 1).execute()
-    if getattr(res, "error", None):
-        raise HTTPException(status_code=502, detail=str(res.error))
-    return res.data or []
-
-@router.get(
-    "/with-assignees",
-    response_model=List[CategoryWithDefaultAssigneesOut],
-    summary="List categories with their default assignees",
-)
-def list_categories_with_assignees(
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    department_id: int | None = Query(None, description="Filter by department_id"),
     assignee_active: bool | None = Query(None, description="Filter default assignees by active flag"),
 ):
     sb = get_supabase()
 
     # Fetch categories (paged)
     q = sb.table("categories").select("*")
-    if department_id is not None:
-        q = q.eq("department_id", department_id)
     cat_res = q.order("id").range(offset, offset + limit - 1).execute()
     if getattr(cat_res, "error", None):
         raise HTTPException(status_code=502, detail=str(cat_res.error))
@@ -67,6 +64,37 @@ def list_categories_with_assignees(
         raise HTTPException(status_code=502, detail=str(a_res.error))
     assignees = a_res.data or []
 
+    # Collect staff_ids from mappings
+    staff_ids = sorted({
+        a.get("staff_id")
+        for a in assignees
+        if isinstance(a, dict) and a.get("staff_id") is not None
+    })
+
+    # Load staff rows and departments for profiles
+    staff_map: dict[int, dict] = {}
+    dept_map: dict[int, dict] = {}
+    if staff_ids:
+        sres = sb.table("internal_staff").select("*").in_("id", staff_ids).execute()
+        if getattr(sres, "error", None):
+            raise HTTPException(status_code=502, detail=str(sres.error))
+        for s in sres.data or []:
+            if isinstance(s, dict) and s.get("id") is not None:
+                staff_map[s.get("id")] = s
+
+        dept_ids = sorted({
+            (s.get("department_id"))
+            for s in staff_map.values()
+            if isinstance(s, dict) and s.get("department_id") is not None
+        })
+        if dept_ids:
+            dres = sb.table("departments").select("id,name").in_("id", dept_ids).execute()
+            if getattr(dres, "error", None):
+                raise HTTPException(status_code=502, detail=str(dres.error))
+            for d in dres.data or []:
+                if isinstance(d, dict) and d.get("id") is not None:
+                    dept_map[d.get("id")] = d
+
     # Group by category_id
     by_cat: dict[int, list] = {}
     for row in assignees:
@@ -74,13 +102,42 @@ def list_categories_with_assignees(
         if cid is not None:
             by_cat.setdefault(cid, []).append(row)
 
-    # Compose response
+    # Compose response: default_assignees as list[UserPolishedOut]
     out: list[dict] = []
     for c in categories:
         cid = c.get("id")
+        polished_list: list[dict] = []
+        seen: set[int] = set()
+        for m in by_cat.get(cid, []) or []:
+            staff = staff_map.get(m.get("staff_id")) if isinstance(m, dict) else None
+            dept = None
+            if isinstance(staff, dict) and staff.get("department_id") is not None:
+                dept = dept_map.get(staff.get("department_id"))
+            if isinstance(staff, dict):
+                sid = staff.get("id")
+                if sid is not None and sid not in seen:
+                    polished_list.append({
+                        "id": staff.get("id"),
+                        "email": staff.get("email"),
+                        "name": staff.get("name"),
+                        "role": "staff",
+                        "staff_id": staff.get("id"),
+                        "is_active": (staff.get("status") == "active"),
+                        "created_at": staff.get("created_at"),
+                        # "updated_at": staff.get("updated_at"),
+                        "profile": {
+                            "avatar": None,
+                            "department": ({"id": dept.get("id"), "name": dept.get("name")} if isinstance(dept, dict) else None),
+                        },
+                    })
+                    seen.add(sid)
+
         out.append({
-            **c,
-            "default_assignees": by_cat.get(cid, []),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "description": c.get("description"),
+            "department_id": c.get("department_id"),
+            "default_assignees": polished_list,
         })
 
     return out

@@ -5,6 +5,7 @@ from app.models.schemas import (
     DepartmentOut,
     DepartmentCreate,
     DepartmentPatch,
+    DepartmentListOut,
 )
 
 from app.api.deps import require_admin
@@ -12,7 +13,7 @@ from app.api.deps import require_admin
 router = APIRouter(tags=["departments"])
 
 
-@router.get("/", summary="List departments")
+@router.get("/", response_model=List[DepartmentListOut], response_model_exclude_none=True, summary="List departments")
 def list_departments(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     sb = get_supabase()
     res = (
@@ -24,7 +25,17 @@ def list_departments(limit: int = Query(50, ge=1, le=100), offset: int = Query(0
     )
     if getattr(res, "error", None):
         raise HTTPException(status_code=502, detail=str(res.error))
-    return res.data or []
+    rows = res.data or []
+    # Return only id, name, google_channel (no default_assignee_id)
+    out: list[dict] = []
+    for r in rows:
+        if isinstance(r, dict):
+            out.append({
+                "id": r.get("id"),
+                "name": r.get("name"),
+                # "google_channel": r.get("google_channel"),
+            })
+    return out
 
 
 @router.get("/{department_id}", response_model=DepartmentOut, summary="Get department by id")
